@@ -1,0 +1,43 @@
+from langgraph.graph import END, START, StateGraph
+
+from app.agents.supervisor.state import SupervisorState
+from app.schemas import Intent
+
+
+def _classify(message: str) -> Intent:
+    text = message.lower()
+    if "日报" in text or "daily report" in text:
+        return Intent.DAILY_REPORT
+    if "周报" in text or "weekly report" in text:
+        return Intent.WEEKLY_REPORT
+    if "会议纪要" in text or "meeting minutes" in text:
+        return Intent.MEETING_MINUTES
+    if "润色" in text or "polish" in text:
+        return Intent.EMAIL_POLISH
+    if "excel" in text or "csv" in text or "分析文件" in text:
+        return Intent.FILE_ANALYSIS
+    if "知识库" in text or "knowledge" in text:
+        return Intent.KNOWLEDGE_QA
+    return Intent.GENERAL_CHAT
+
+
+def parse_request(state: SupervisorState) -> SupervisorState:
+    return {"intent": _classify(state["message"]), "status": "routed"}
+
+
+def prepare_result(state: SupervisorState) -> SupervisorState:
+    intent = state["intent"]
+    return {
+        "result_message": f"任务已路由至 {intent.value}；专业 Agent 闭环将在第二阶段接入。",
+        "warnings": ["当前为基础工程，未执行外部系统写操作。"],
+    }
+
+
+def build_supervisor_graph():
+    graph = StateGraph(SupervisorState)
+    graph.add_node("parse_request", parse_request)
+    graph.add_node("prepare_result", prepare_result)
+    graph.add_edge(START, "parse_request")
+    graph.add_edge("parse_request", "prepare_result")
+    graph.add_edge("prepare_result", END)
+    return graph.compile()

@@ -1,0 +1,1 @@
+"""Office assistant application package."""
