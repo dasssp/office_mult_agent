@@ -20,3 +20,9 @@ def test_supervisor_invokes_data_analysis_subagent_tool() -> None:
     )
     assert result["status"] == "completed"
     assert result["subagent_result"]["null_counts"] == {"amount": 1}
+
+
+def test_supervisor_invokes_meeting_minutes_subagent_tool() -> None:
+    result = asyncio.run(build_supervisor_graph().ainvoke({"message": "生成会议纪要", "task_input": {"meeting_id": "m1", "title": "周会", "segments": [{"segment_id": "s1", "text": "确认发布", "confidence": 0.9}]}}))
+    assert result["subagent_result"]["status"] == "draft"
+import asyncio
