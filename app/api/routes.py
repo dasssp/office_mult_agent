@@ -62,11 +62,14 @@ async def generate_report(payload: ReportGenerateRequest) -> ReportDraft:
 
 
 @router.post("/reports/{report_id}/review", response_model=ReportDraft)
-async def review_report(report_id: str, payload: ReportReviewRequest) -> ReportDraft:
+async def review_report(report_id: str, payload: ReportReviewRequest, request: Request) -> ReportDraft:
+    context = build_development_context(request, thread_id=f"report:{report_id}")
     try:
-        return await _report_agent.review(report_id=report_id, approved=payload.approved, comment=payload.comment)
+        return await _report_agent.review(report_id=report_id, approved=payload.approved, comment=payload.comment, context=context, permissions=_permissions, audit=_audit)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="report not found") from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
 
 
 @router.post("/reports/{report_id}/submit", response_model=ReportSubmission)

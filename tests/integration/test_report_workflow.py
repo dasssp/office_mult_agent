@@ -10,7 +10,8 @@ def test_report_requires_approval_then_submits_idempotently() -> None:
     report_id = generated.json()["report_id"]
 
     assert client.post(f"/reports/{report_id}/submit").status_code == 403
-    reviewed = client.post(f"/reports/{report_id}/review", json={"approved": True})
+    assert client.post(f"/reports/{report_id}/review", json={"approved": True}).status_code == 403
+    reviewed = client.post(f"/reports/{report_id}/review", json={"approved": True}, headers={"x-permission-scopes": "report:review"})
     assert reviewed.json()["status"] == "approved"
 
     headers = {"x-permission-scopes": "report:read,report:submit"}

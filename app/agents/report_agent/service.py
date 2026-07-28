@@ -29,12 +29,14 @@ class ReportAgent:
         )
         return await self.repository.save(draft)
 
-    async def review(self, *, report_id: str, approved: bool, comment: str | None) -> ReportDraft:
+    async def review(self, *, report_id: str, approved: bool, comment: str | None, context: RequestContext, permissions: PermissionService, audit: AuditService) -> ReportDraft:
+        permissions.require(context, "report:review")
         draft = await self.repository.get(report_id)
         if draft is None:
             raise KeyError(report_id)
         draft.status = "approved" if approved else "rejected"
         draft.review_comment = comment
+        audit.record(action="report.review", context=context, target_id=report_id)
         return await self.repository.save(draft)
 
     async def submit(
