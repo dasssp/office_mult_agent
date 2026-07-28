@@ -1,5 +1,28 @@
 # Office Multi-Agent
 
+## Deep Agent 双运行时
+
+项目已支持“一个主 Agent + 多个领域子 Agent”的 Deep Agent 架构。主 Agent 使用
+`write_todos` 规划复杂任务，通过 `task` 委派报告、会议、邮件、数据分析和知识检索
+子 Agent，并利用线程工作区、自动摘要和 PostgreSQL Checkpointer 控制上下文及恢复。
+
+默认继续使用原固定 StateGraph，便于本地无模型运行：
+
+```env
+ASSISTANT_RUNTIME=legacy
+```
+
+启用 Deep Agent：
+
+```env
+ASSISTANT_RUNTIME=deep_agent
+AGENT_MODEL=供应商:模型名称
+```
+
+对应模型密钥必须由部署环境或密钥管理系统注入。外部写操作仍需权限、人工审核、幂等
+和审计，主 Agent 不直接持有企业系统写权限。详细说明见
+[Deep Agent 改造说明](docs/DEEP_AGENT_MIGRATION.md)。
+
 企业内部多智能体办公助手，基于 FastAPI、LangGraph 与 PostgreSQL 构建。系统采用 Supervisor 编排四类专业 Agent：日报、会议纪要、邮件润色和文件分析；Java RAG 通过独立 MCP 适配层接入。
 
 ## 本地开发

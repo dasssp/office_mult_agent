@@ -63,3 +63,5 @@ class AssistantStateResponse(BaseModel):
     status: str
     awaiting_approval: bool
     next_nodes: list[str] = Field(default_factory=list)
+    pending_actions: list[str] = Field(default_factory=list)
+    required_scope: str | None = None

@@ -9,6 +9,10 @@ class Settings(BaseSettings):
 
     app_name: str = "office-multi-agent"
     app_env: Literal["development", "test", "production"] = "development"
+    assistant_runtime: Literal["legacy", "deep_agent"] = "legacy"
+    agent_model: str | None = None
+    agent_recursion_limit: int = 48
+    agent_timeout_seconds: int = 180
     log_level: str = "INFO"
     database_url: str | None = None
     knowledge_mcp_url: str | None = None

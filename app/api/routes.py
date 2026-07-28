@@ -52,10 +52,7 @@ _meeting_agent = MeetingMinutesAgent()
 _email_connector = MockEmailConnector()
 _files = FileService()
 _artifacts = ArtifactService()
-_connectors = ConnectorRegistry(
-    report_system=_report_connector,
-    email=_email_connector,
-)
+_connectors = ConnectorRegistry.for_environment("development")
 
 
 def _report_agent_for(request: Request) -> ReportAgent:
@@ -164,8 +161,12 @@ async def _require_pending_approval(thread_id: str, request: Request):
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="pending approval not found")
+    snapshot = await _graph_for(request).aget_state(
+        {"configurable": {"thread_id": thread_id}}
+    )
+    required_scope = str(snapshot.values.get("required_scope", "report:review"))
     try:
-        _permissions.require(context, "report:review")
+        _permissions.require(context, required_scope)
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
     return context
@@ -188,6 +189,13 @@ async def resume_assistant(
         comment=payload.comment,
         context=context,
     )
+    awaiting_approval = "__interrupt__" in result
+    if awaiting_approval:
+        await _approvals_for(request).request(
+            target_type="assistant_thread",
+            target_id=thread_id,
+            context=context,
+        )
     return AssistantInvokeResponse(
         request_id=context.request_id,
         thread_id=thread_id,
@@ -195,6 +203,7 @@ async def resume_assistant(
         status=result["status"],
         message=result["result_message"],
         warnings=result["warnings"],
+        awaiting_approval=awaiting_approval,
         result=result.get("result") or result.get("subagent_result"),
     )
 
@@ -208,6 +217,14 @@ async def assistant_state(thread_id: str, request: Request) -> AssistantStateRes
         status=str(snapshot.values.get("status", "unknown")),
         awaiting_approval=bool(snapshot.next),
         next_nodes=list(snapshot.next),
+        pending_actions=[
+            str(item) for item in snapshot.values.get("pending_actions", [])
+        ],
+        required_scope=(
+            str(snapshot.values["required_scope"])
+            if snapshot.values.get("required_scope")
+            else None
+        ),
     )
 
 

@@ -20,6 +20,13 @@ services:
         condition: service_healthy
     environment:
       APP_ENV: ${APP_ENV:-development}
+      ASSISTANT_RUNTIME: ${ASSISTANT_RUNTIME:-legacy}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      AGENT_RECURSION_LIMIT: ${AGENT_RECURSION_LIMIT:-48}
+      AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-180}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-office_app}:${POSTGRES_PASSWORD:-change-me-before-production}@postgres:5432/${POSTGRES_DB:-office_multi_agent}
       MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-2097152}
       LANGGRAPH_STRICT_MSGPACK: "true"
