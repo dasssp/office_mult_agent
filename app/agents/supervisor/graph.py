@@ -34,13 +34,25 @@ def prepare_result(state: SupervisorState) -> SupervisorState:
     }
 
 
+def call_email_polish_agent(state: SupervisorState) -> SupervisorState:
+    tool = next(item for item in build_subagent_tools() if item.name == "email_polish_tool")
+    result = tool.invoke({"subject": "邮件润色草稿", "body": state["message"]})
+    return {"subagent_result": result, "status": "completed"}
+
+
+def route_after_parse(state: SupervisorState) -> str:
+    return "call_email_polish_agent" if state["intent"] is Intent.EMAIL_POLISH else "prepare_result"
+
+
 def build_supervisor_graph():
     # Registered tools are intentionally narrow; state graph keeps orchestration deterministic.
     build_subagent_tools()
     graph = StateGraph(SupervisorState)
     graph.add_node("parse_request", parse_request)
     graph.add_node("prepare_result", prepare_result)
+    graph.add_node("call_email_polish_agent", call_email_polish_agent)
     graph.add_edge(START, "parse_request")
-    graph.add_edge("parse_request", "prepare_result")
+    graph.add_conditional_edges("parse_request", route_after_parse)
+    graph.add_edge("call_email_polish_agent", "prepare_result")
     graph.add_edge("prepare_result", END)
     return graph.compile()

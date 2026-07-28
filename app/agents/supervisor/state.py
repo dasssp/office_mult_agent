@@ -8,4 +8,5 @@ class SupervisorState(TypedDict, total=False):
     intent: Intent
     status: str
     result_message: str
+    subagent_result: dict[str, object]
     warnings: list[str]
