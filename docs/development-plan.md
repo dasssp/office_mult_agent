@@ -44,6 +44,7 @@
 - PostgreSQL 16 CI 测试覆盖真实检查点中断和跨进程恢复。
 - Redis 对 GitLab 活动、带引用知识问答和确认记忆实施隔离缓存与回源降级。
 - GitLab Events API 通过独立 Connector 接入，CI 迁移到 `.gitlab-ci.yml`。
+- 日报扩展为 GitLab、任务、邮件摘要和已审核会议纪要四路并行聚合，支持单来源故障降级。
 - Docker Compose 同时交付 API、PostgreSQL、Redis 和 Worker。
 
 ## 灰度建议

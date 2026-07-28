@@ -1,3 +1,7 @@
+import hashlib
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from app.connectors.base import EmailConnector
 from app.repositories.meetings import (
     InMemoryMeetingMinutesRepository,
@@ -34,7 +38,12 @@ class MeetingMinutesAgent:
         title: str,
         segments: list[TranscriptSegment],
         context: RequestContext,
+        meeting_date: str | None = None,
     ) -> MeetingMinutesDraft:
+        try:
+            generated_at = datetime.now(ZoneInfo(context.timezone))
+        except ZoneInfoNotFoundError:
+            generated_at = datetime.now().astimezone()
         evidence_ids = [segment.segment_id for segment in segments]
         summary = " ".join(segment.text for segment in segments)
         warnings = [] if segments else ["没有可用的转写片段，无法生成有证据的纪要。"]
@@ -62,8 +71,26 @@ class MeetingMinutesAgent:
             decisions=decisions,
             action_items=action_items,
             status="draft",
+            meeting_date=meeting_date or generated_at.date().isoformat(),
+            generated_at=generated_at,
         )
         return await self._repository.save(draft, context)
+
+    async def list_for_report(
+        self,
+        *,
+        date_from: str,
+        date_to: str,
+        context: RequestContext,
+    ) -> list[MeetingMinutesDraft]:
+        items = await self._repository.list_recent(context)
+        return [
+            item
+            for item in items
+            if item.status in {"approved", "sent"}
+            and item.meeting_date is not None
+            and date_from <= item.meeting_date <= date_to
+        ]
 
     async def review(self, *, meeting_id: str, approved: bool, comment: str | None, context: RequestContext, permissions: PermissionService, audit: AuditService) -> MeetingMinutesDraft:
         permissions.require(context, "meeting:review")
@@ -105,4 +132,3 @@ class MeetingMinutesAgent:
             context=context,
         )
         return MeetingEmailStatus.model_validate(stored)
-import hashlib

@@ -24,7 +24,12 @@ class ReportAgent:
         return await MockWorkSources().collect_events()
 
     async def generate_daily(
-        self, *, report_date: str, events: list[WorkEvent], context: RequestContext | None = None
+        self,
+        *,
+        report_date: str,
+        events: list[WorkEvent],
+        context: RequestContext | None = None,
+        source_warnings: list[str] | None = None,
     ) -> ReportDraft:
         events = self._deduplicate(events)
         completed = [event for event in events if event.status == "completed"]
@@ -32,16 +37,23 @@ class ReportAgent:
         blocked = [event for event in events if event.status == "blocked"]
         draft = ReportDraft(
             report_date=report_date,
-            completed=[event.title for event in completed],
-            in_progress=[event.title for event in in_progress],
-            risks=[event.title for event in blocked],
-            plans=[event.title for event in events if event.status == "planned"],
+            completed=[self._report_line(event) for event in completed],
+            in_progress=[self._report_line(event) for event in in_progress],
+            risks=[self._report_line(event) for event in blocked],
+            plans=[
+                self._report_line(event)
+                for event in events
+                if event.status == "planned"
+            ],
             evidence_event_ids=[event.event_id for event in events],
             overview=f"共汇总 {len(events)} 项有证据的工作事件。",
             source_warnings=[
-                f"事件 {event.event_id} 状态或证据可信度需要确认"
-                for event in events
-                if event.status == "unknown" or event.confidence < 0.6
+                *(source_warnings or []),
+                *[
+                    f"事件 {event.event_id} 状态或证据可信度需要确认"
+                    for event in events
+                    if event.status == "unknown" or event.confidence < 0.6
+                ],
             ],
             status="draft",
         )
@@ -53,11 +65,13 @@ class ReportAgent:
         week_start: str,
         events: list[WorkEvent],
         context: RequestContext | None = None,
+        source_warnings: list[str] | None = None,
     ) -> ReportDraft:
         draft = await self.generate_daily(
             report_date=week_start,
             events=events,
             context=context,
+            source_warnings=source_warnings,
         )
         draft.report_type = "weekly"
         draft.overview = f"本周共汇总 {len(draft.evidence_event_ids)} 项去重后的工作事件。"
@@ -72,6 +86,13 @@ class ReportAgent:
             if current is None or event.confidence > current.confidence:
                 selected[key] = event
         return list(selected.values())
+
+    @staticmethod
+    def _report_line(event: WorkEvent) -> str:
+        detail = (event.result or event.description or "").strip()
+        if not detail or detail in event.title:
+            return event.title
+        return f"{event.title}：{detail[:200]}"
 
     async def review(self, *, report_id: str, approved: bool, comment: str | None, context: RequestContext, permissions: PermissionService, audit: AuditService) -> ReportDraft:
         permissions.require(context, "report:review")

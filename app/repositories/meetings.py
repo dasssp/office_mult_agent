@@ -17,21 +17,39 @@ class MeetingMinutesRepository(Protocol):
         self, meeting_id: str, context: RequestContext
     ) -> MeetingMinutesDraft | None: ...
 
+    async def list_recent(
+        self, context: RequestContext, *, limit: int = 200
+    ) -> list[MeetingMinutesDraft]: ...
+
 
 class InMemoryMeetingMinutesRepository:
     def __init__(self) -> None:
         self._drafts: dict[tuple[str, str], MeetingMinutesDraft] = {}
+        self._owners: dict[tuple[str, str], str] = {}
 
     async def save(
         self, draft: MeetingMinutesDraft, context: RequestContext
     ) -> MeetingMinutesDraft:
-        self._drafts[(context.tenant_id, draft.meeting_id)] = draft
+        key = (context.tenant_id, draft.meeting_id)
+        self._drafts[key] = draft
+        self._owners.setdefault(key, context.operator_id)
         return draft
 
     async def get(
         self, meeting_id: str, context: RequestContext
     ) -> MeetingMinutesDraft | None:
         return self._drafts.get((context.tenant_id, meeting_id))
+
+    async def list_recent(
+        self, context: RequestContext, *, limit: int = 200
+    ) -> list[MeetingMinutesDraft]:
+        owned = [
+            draft
+            for key, draft in reversed(list(self._drafts.items()))
+            if key[0] == context.tenant_id
+            and self._owners.get(key) == context.operator_id
+        ]
+        return owned[:limit]
 
 
 class SqlAlchemyMeetingMinutesRepository:
@@ -82,3 +100,21 @@ class SqlAlchemyMeetingMinutesRepository:
                 if record is not None
                 else None
             )
+
+    async def list_recent(
+        self, context: RequestContext, *, limit: int = 200
+    ) -> list[MeetingMinutesDraft]:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MeetingMinutesRecord)
+                .where(
+                    MeetingMinutesRecord.tenant_id == context.tenant_id,
+                    MeetingMinutesRecord.created_by == context.operator_id,
+                )
+                .order_by(MeetingMinutesRecord.created_at.desc())
+                .limit(limit)
+            )
+            return [
+                MeetingMinutesDraft.model_validate(record.payload)
+                for record in result.scalars()
+            ]

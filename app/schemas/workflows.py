@@ -54,6 +54,21 @@ class WorkEvent(BaseModel):
     evidence: list[EvidenceRef] = Field(default_factory=list)
 
 
+class EmailActivity(BaseModel):
+    message_id: str
+    subject: str
+    summary: str = ""
+    occurred_at: datetime | None = None
+    direction: Literal["sent"] = "sent"
+    sensitive: bool = False
+
+
+class WorkEventCollection(BaseModel):
+    events: list[WorkEvent] = Field(default_factory=list)
+    source_warnings: list[str] = Field(default_factory=list)
+    source_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class ReportGenerateRequest(BaseModel):
     report_date: str
     report_type: Literal["daily", "weekly"] = "daily"
@@ -104,6 +119,7 @@ class TranscriptSegment(BaseModel):
 class MeetingMinutesRequest(BaseModel):
     title: str
     segments: list[TranscriptSegment]
+    meeting_date: str | None = None
 
 
 class MeetingMinutesDraft(BaseModel):
@@ -122,6 +138,8 @@ class MeetingMinutesDraft(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
     version: int = Field(default=1, ge=1)
     content_sha256: str | None = None
+    meeting_date: str | None = None
+    generated_at: datetime | None = None
 
 
 class MeetingDecision(BaseModel):

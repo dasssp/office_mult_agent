@@ -31,6 +31,15 @@ class KnowledgeConnector(Protocol):
 
 
 class EmailConnector(Protocol):
+    async def list_activity(
+        self,
+        *,
+        employee_id: str,
+        date_from: str,
+        date_to: str,
+        context: RequestContext,
+    ) -> list[dict]: ...
+
     async def send_email(
         self,
         *,

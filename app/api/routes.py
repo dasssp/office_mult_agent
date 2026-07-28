@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -42,6 +44,7 @@ from app.services.audit import AuditService
 from app.services.files import FileService, UnsafeFileError
 from app.services.permissions import PermissionService
 from app.services.runtime_state import BackgroundTask, BackgroundTaskService
+from app.services.work_events import MultiSourceWorkEventCollector
 
 router = APIRouter()
 _graph = build_supervisor_graph(checkpointer=InMemorySaver())
@@ -253,15 +256,42 @@ async def assistant_state(thread_id: str, request: Request) -> AssistantStateRes
 async def generate_report(payload: ReportGenerateRequest, request: Request) -> ReportDraft:
     context = build_development_context(request, thread_id=f"report:new:{payload.report_date}")
     agent = _report_agent_for(request)
-    events = payload.events or (
-        await agent.collect_mock_events() if payload.use_mock_sources else []
-    )
+    source_warnings: list[str] = []
+    if payload.events:
+        events = payload.events
+    elif payload.use_mock_sources:
+        events = await agent.collect_mock_events()
+    else:
+        date_to = payload.report_date
+        if payload.report_type == "weekly":
+            date_to = (
+                date.fromisoformat(payload.report_date) + timedelta(days=6)
+            ).isoformat()
+        connectors = _connectors_for(request)
+        collection = await MultiSourceWorkEventCollector(
+            gitlab=connectors.gitlab,
+            tasks=connectors.task,
+            email=connectors.email,
+            meeting_minutes=_meeting_agent_for(request),
+        ).collect(
+            date_from=payload.report_date,
+            date_to=date_to,
+            context=context,
+        )
+        events = collection.events
+        source_warnings = collection.source_warnings
     if payload.report_type == "weekly":
         return await agent.generate_weekly(
-            week_start=payload.report_date, events=events, context=context
+            week_start=payload.report_date,
+            events=events,
+            source_warnings=source_warnings,
+            context=context,
         )
     return await agent.generate_daily(
-        report_date=payload.report_date, events=events, context=context
+        report_date=payload.report_date,
+        events=events,
+        source_warnings=source_warnings,
+        context=context,
     )
 
 
@@ -316,6 +346,7 @@ async def generate_minutes(
         title=payload.title,
         segments=payload.segments,
         context=context,
+        meeting_date=payload.meeting_date,
     )
 
 

@@ -5,7 +5,12 @@ from app.schemas import RequestContext
 
 class MockMeetingIMConnector:
     async def get_meeting(self, *, meeting_id: str, context: RequestContext) -> dict:
-        return {"meeting_id": meeting_id, "title": "项目周会", "host_id": "employee-a"}
+        return {
+            "meeting_id": meeting_id,
+            "title": "项目周会",
+            "host_id": "employee-a",
+            "meeting_date": "2026-07-28",
+        }
 
     async def get_invited_participants(
         self, *, meeting_id: str, context: RequestContext

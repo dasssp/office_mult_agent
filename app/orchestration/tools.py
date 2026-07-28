@@ -1,6 +1,6 @@
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
@@ -19,12 +19,13 @@ from app.connectors.base import (
     TaskConnector,
 )
 from app.schemas import RequestContext
-from app.schemas.workflows import SourceType, TranscriptSegment, WorkEvent
+from app.schemas.workflows import TranscriptSegment, WorkEvent
 from app.services.artifacts import ArtifactService
 from app.services.audit import AuditService
 from app.services.files import FileService
 from app.services.permissions import PermissionService
 from app.services.runtime_state import BackgroundTaskService, MemoryService
+from app.services.work_events import MultiSourceWorkEventCollector
 
 
 @dataclass
@@ -52,69 +53,25 @@ def _json(model: Any) -> dict[str, Any]:
     return model.model_dump(mode="json")
 
 
-def _work_status(
-    value: object,
-) -> Literal["completed", "in_progress", "blocked", "planned", "unknown"]:
-    status = str(value)
-    aliases = {
-        "done": "completed",
-        "closed": "completed",
-        "doing": "in_progress",
-        "open": "planned",
-    }
-    normalized = aliases.get(status, status)
-    if normalized not in {"completed", "in_progress", "blocked", "planned", "unknown"}:
-        return "unknown"
-    return cast(
-        Literal["completed", "in_progress", "blocked", "planned", "unknown"],
-        normalized,
-    )
-
-
 def build_report_tools(deps: DeepAgentDependencies) -> list[BaseTool]:
     @tool
     async def collect_work_events(
         date_from: str,
         date_to: str,
         runtime: ToolRuntime[RequestContext],
-    ) -> list[dict[str, Any]]:
-        """并行查询当前员工的 Git 和任务活动并转换为可追溯工作事件。"""
-        employee_id = runtime.context.employee_id or runtime.context.operator_id
-        gitlab_activity, tasks = await asyncio.gather(
-            deps.gitlab_connector.list_activity(
-                employee_id=employee_id,
-                date_from=date_from,
-                date_to=date_to,
-                context=runtime.context,
-            ),
-            deps.task_connector.list_tasks(
-                employee_id=employee_id,
-                context=runtime.context,
-            ),
+    ) -> dict[str, Any]:
+        """并行查询 GitLab、任务、已发送邮件和已审核会议纪要。"""
+        collection = await MultiSourceWorkEventCollector(
+            gitlab=deps.gitlab_connector,
+            tasks=deps.task_connector,
+            email=deps.email_connector,
+            meeting_minutes=deps.meeting_agent,
+        ).collect(
+            date_from=date_from,
+            date_to=date_to,
+            context=runtime.context,
         )
-        events = [
-            WorkEvent(
-                event_id=f"gitlab:{item.get('id', index)}",
-                title=str(item.get("title", "GitLab 活动")),
-                status="completed",
-                source_type=SourceType.GITLAB,
-                source_id=str(item.get("id", index)),
-                evidence_url=f"connector://gitlab/{item.get('id', index)}",
-            )
-            for index, item in enumerate(gitlab_activity)
-        ]
-        events.extend(
-            WorkEvent(
-                event_id=f"task:{item.get('task_id', index)}",
-                title=str(item.get("title", "任务活动")),
-                status=_work_status(item.get("status", "unknown")),
-                source_type=SourceType.TASK,
-                source_id=str(item.get("task_id", index)),
-                evidence_url=f"connector://task/{item.get('task_id', index)}",
-            )
-            for index, item in enumerate(tasks)
-        )
-        return [_json(item) for item in events]
+        return collection.model_dump(mode="json")
 
     @tool
     async def generate_report_draft(
@@ -122,19 +79,22 @@ def build_report_tools(deps: DeepAgentDependencies) -> list[BaseTool]:
         events: list[dict[str, object]],
         report_type: str,
         runtime: ToolRuntime[RequestContext],
+        source_warnings: list[str] | None = None,
     ) -> dict[str, Any]:
-        """根据有证据的工作事件生成日报或周报草稿，不执行提交。"""
+        """根据多数据源工作事件生成日报或周报草稿，不执行提交。"""
         parsed = [WorkEvent.model_validate(item) for item in events]
         if report_type == "weekly":
             result = await deps.report_agent.generate_weekly(
                 week_start=report_date,
                 events=parsed,
+                source_warnings=source_warnings,
                 context=runtime.context,
             )
         else:
             result = await deps.report_agent.generate_daily(
                 report_date=report_date,
                 events=parsed,
+                source_warnings=source_warnings,
                 context=runtime.context,
             )
         return _json(result)

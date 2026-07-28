@@ -9,6 +9,8 @@
 - 一个主 Agent 负责任务理解、TODO 规划、并行委派、动态重规划和结果汇总。
 - Report、Meeting 使用真实的可编译 LangGraph 领域子图；Email、Data、Knowledge
   使用隔离工具集的专业子 Agent。
+- 日报将 GitLab、任务系统、已发送邮件摘要和已审核会议纪要并行聚合为统一
+  `WorkEvent`；单个来源失败时保留其他来源结果并返回明确警告。
 - 子任务失败后强制先更新计划再继续委派，并限制委派次数、计划更新次数、递归深度和超时。
 - Deep Agents 自动进行上下文摘要，大型中间产物卸载到工作区；确认后的长期记忆按
   `tenant_id + operator_id` 隔离保存。
@@ -145,6 +147,20 @@ GITLAB_REQUEST_TIMEOUT_SECONDS=10
 日报采集通过 GitLab Events API 读取用户活动。生产模式缺少 GitLab 地址或访问令牌时
 拒绝启动；令牌不会写入日志或缓存。仓库 CI 已迁移为根目录 `.gitlab-ci.yml`，包含
 单元/静态检查、Redis 集成测试、PostgreSQL 恢复测试和镜像构建。
+
+## 多数据源日报
+
+日报与周报默认并行聚合以下只读数据：
+
+- GitLab 推送、Commit 和合并请求活动；
+- 当前员工的任务状态；
+- 当前员工已发送邮件的主题和业务摘要，不读取原始完整正文；
+- 当前员工创建且已经审核或发送的会议纪要及会议结论。
+
+所有来源统一转换为带 `source_type`、`source_id` 和 `evidence_url` 的 `WorkEvent`。
+格式无效或带敏感标记的邮件会被忽略；单个 Connector 不可用时，系统使用其他来源继续
+生成草稿，并把缺失来源写入 `source_warnings`。生产环境仍需按照企业邮件系统的实际
+接口实现 `EmailConnector.list_activity`。
 
 ## 质量检查
 

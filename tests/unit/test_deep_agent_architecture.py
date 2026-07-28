@@ -26,6 +26,7 @@ from app.orchestration.domain_graphs import build_report_subgraph
 from app.orchestration.middleware import count_tool_calls, requires_replan
 from app.orchestration.subagents import build_subagent_profiles
 from app.schemas import RequestContext
+from app.schemas.workflows import TranscriptSegment
 from app.services.artifacts import ArtifactService
 from app.services.audit import AuditService
 from app.services.files import FileService
@@ -267,6 +268,29 @@ async def test_report_compiled_subgraph_generates_evidence_draft(tmp_path) -> No
         tenant_id="tenant-a",
         operator_id="user-a",
         employee_id="employee-a",
+        permission_scopes={"meeting:review"},
+    )
+    dependencies = _dependencies(tmp_path)
+    await dependencies.meeting_agent.generate(
+        meeting_id="meeting-report-source",
+        title="日报数据评审会",
+        meeting_date="2026-07-28",
+        segments=[
+            TranscriptSegment(
+                segment_id="segment-report-source",
+                text="确认完成日报多数据源聚合。",
+                confidence=0.95,
+            )
+        ],
+        context=context,
+    )
+    await dependencies.meeting_agent.review(
+        meeting_id="meeting-report-source",
+        approved=True,
+        comment=None,
+        context=context,
+        permissions=dependencies.permissions,
+        audit=dependencies.audit,
     )
     graph = build_report_subgraph(
         model=_report_model(
@@ -277,7 +301,7 @@ async def test_report_compiled_subgraph_generates_evidence_draft(tmp_path) -> No
                 "events": [],
             }
         ),
-        dependencies=_dependencies(tmp_path),
+        dependencies=dependencies,
         checkpointer=InMemorySaver(),
     )
 
@@ -289,7 +313,11 @@ async def test_report_compiled_subgraph_generates_evidence_draft(tmp_path) -> No
 
     assert result["status"] == "completed"
     assert result["result"]["status"] == "draft"
-    assert result["result"]["evidence_event_ids"]
+    evidence_ids = result["result"]["evidence_event_ids"]
+    assert any(item.startswith("gitlab:") for item in evidence_ids)
+    assert any(item.startswith("task:") for item in evidence_ids)
+    assert any(item.startswith("email:") for item in evidence_ids)
+    assert any(item.startswith("meeting:") for item in evidence_ids)
 
 
 @pytest.mark.asyncio

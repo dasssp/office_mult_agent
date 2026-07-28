@@ -1,5 +1,5 @@
-import asyncio
 import json
+from datetime import date, timedelta
 from typing import Annotated, Literal, TypedDict
 
 from langchain_core.language_models import BaseChatModel
@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 
 from app.orchestration.tools import DeepAgentDependencies
 from app.schemas import RequestContext
-from app.schemas.workflows import SourceType, TranscriptSegment, WorkEvent
+from app.schemas.workflows import TranscriptSegment, WorkEvent
+from app.services.work_events import MultiSourceWorkEventCollector
 
 
 class ReportTaskSpec(BaseModel):
@@ -29,6 +30,7 @@ class MeetingTaskSpec(BaseModel):
     operation: Literal["transcribe", "generate", "review", "send"]
     meeting_id: str
     title: str | None = None
+    meeting_date: str | None = None
     segments: list[TranscriptSegment] = Field(default_factory=list)
     approved: bool = True
     comment: str | None = None
@@ -123,56 +125,37 @@ def build_report_subgraph(
                 "result": {},
             }
         events = spec.events
+        source_warnings: list[str] = []
         if not events:
-            employee_id = runtime.context.employee_id or runtime.context.operator_id
-            gitlab_activity, tasks = await asyncio.gather(
-                dependencies.gitlab_connector.list_activity(
-                    employee_id=employee_id,
-                    date_from=spec.report_date,
-                    date_to=spec.report_date,
-                    context=runtime.context,
-                ),
-                dependencies.task_connector.list_tasks(
-                    employee_id=employee_id,
-                    context=runtime.context,
-                ),
+            date_to = spec.report_date
+            if spec.report_type == "weekly":
+                date_to = (
+                    date.fromisoformat(spec.report_date) + timedelta(days=6)
+                ).isoformat()
+            collection = await MultiSourceWorkEventCollector(
+                gitlab=dependencies.gitlab_connector,
+                tasks=dependencies.task_connector,
+                email=dependencies.email_connector,
+                meeting_minutes=dependencies.meeting_agent,
+            ).collect(
+                date_from=spec.report_date,
+                date_to=date_to,
+                context=runtime.context,
             )
-            events = [
-                WorkEvent(
-                    event_id=f"gitlab:{item.get('id', index)}",
-                    title=str(item.get("title", "GitLab 活动")),
-                    status="completed",
-                    source_type=SourceType.GITLAB,
-                    source_id=str(item.get("id", index)),
-                    evidence_url=f"connector://gitlab/{item.get('id', index)}",
-                )
-                for index, item in enumerate(gitlab_activity)
-            ]
-            events.extend(
-                WorkEvent(
-                    event_id=f"task:{item.get('task_id', index)}",
-                    title=str(item.get("title", "任务活动")),
-                    status=(
-                        "completed"
-                        if str(item.get("status")) in {"completed", "done", "closed"}
-                        else "unknown"
-                    ),
-                    source_type=SourceType.TASK,
-                    source_id=str(item.get("task_id", index)),
-                    evidence_url=f"connector://task/{item.get('task_id', index)}",
-                )
-                for index, item in enumerate(tasks)
-            )
+            events = collection.events
+            source_warnings = collection.source_warnings
         if spec.report_type == "weekly":
             result = await dependencies.report_agent.generate_weekly(
                 week_start=spec.report_date,
                 events=events,
+                source_warnings=source_warnings,
                 context=runtime.context,
             )
         else:
             result = await dependencies.report_agent.generate_daily(
                 report_date=spec.report_date,
                 events=events,
+                source_warnings=source_warnings,
                 context=runtime.context,
             )
         return {"status": "completed", "result": result.model_dump(mode="json")}
@@ -277,7 +260,7 @@ def build_meeting_subgraph(
                 SystemMessage(
                     content=(
                         "将任务解析为会议纪要操作。只使用明确提供的 meeting_id、"
-                        "title 和转写片段，不猜测负责人或截止日期。"
+                        "title、meeting_date 和转写片段，不猜测负责人或截止日期。"
                     )
                 ),
                 HumanMessage(content=_human_text(state)),
@@ -309,17 +292,24 @@ def build_meeting_subgraph(
     ) -> DomainState:
         spec = MeetingTaskSpec.model_validate(state["spec"])
         title = spec.title
-        if title is None:
+        meeting_date = spec.meeting_date
+        if title is None or meeting_date is None:
             meeting = await dependencies.meeting_connector.get_meeting(
                 meeting_id=spec.meeting_id,
                 context=runtime.context,
             )
-            title = str(meeting.get("title", "会议纪要"))
+            if title is None:
+                title = str(meeting.get("title", "会议纪要"))
+            if meeting_date is None:
+                raw_date = meeting.get("meeting_date") or meeting.get("start_time")
+                if raw_date:
+                    meeting_date = str(raw_date)[:10]
         result = await dependencies.meeting_agent.generate(
             meeting_id=spec.meeting_id,
             title=title,
             segments=spec.segments,
             context=runtime.context,
+            meeting_date=meeting_date,
         )
         return {"status": "completed", "result": result.model_dump(mode="json")}
 
