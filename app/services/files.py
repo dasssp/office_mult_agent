@@ -2,6 +2,8 @@ import csv
 import io
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from uuid import uuid4
 
 
@@ -18,10 +20,13 @@ class FileService:
         if len(content) > self.max_bytes:
             raise UnsafeFileError("file exceeds maximum size")
         suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        if suffix not in {"csv", "json"}:
-            raise UnsafeFileError("only CSV and JSON are supported in this phase")
-        text = content.decode("utf-8-sig")
-        rows = self._parse_csv(text) if suffix == "csv" else self._parse_json(text)
+        if suffix not in {"csv", "json", "xlsx"}:
+            raise UnsafeFileError("only CSV, JSON and XLSX are supported")
+        if suffix == "xlsx":
+            rows = self._parse_xlsx(content)
+        else:
+            text = content.decode("utf-8-sig")
+            rows = self._parse_csv(text) if suffix == "csv" else self._parse_json(text)
         file_id = str(uuid4())
         self.files[file_id] = rows
         return file_id
@@ -43,3 +48,24 @@ class FileService:
         if not isinstance(parsed, list) or not all(isinstance(row, dict) for row in parsed):
             raise UnsafeFileError("JSON must be an array of objects")
         return parsed
+
+    def _parse_xlsx(self, content: bytes) -> list[dict[str, object]]:
+        from openpyxl import load_workbook
+
+        with NamedTemporaryFile(suffix=".xlsx", delete=False) as handle:
+            handle.write(content)
+            path = Path(handle.name)
+        try:
+            workbook = load_workbook(path, read_only=True, data_only=True, keep_vba=False)
+            sheet = workbook.active
+            values = list(sheet.iter_rows(values_only=True))
+            if not values:
+                return []
+            headers = [str(value) if value is not None else "" for value in values[0]]
+            if not all(headers) or len(set(headers)) != len(headers):
+                raise UnsafeFileError("XLSX headers must be present and unique")
+            result = [dict(zip(headers, row, strict=True)) for row in values[1:]]
+            workbook.close()
+            return result
+        finally:
+            path.unlink(missing_ok=True)

@@ -1,4 +1,7 @@
+from io import BytesIO
+
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 
 from app.main import app
 
@@ -16,3 +19,13 @@ def test_analyze_uploaded_file() -> None:
     uploaded = client.post("/files/upload", files={"file": ("data.json", '[{"amount": 1}, {"amount": null}]', "application/json")})
     result = client.post(f"/analysis/files/{uploaded.json()['file_id']}")
     assert result.json()["null_counts"] == {"amount": 1}
+
+
+def test_upload_xlsx() -> None:
+    workbook = Workbook()
+    workbook.active.append(["amount"])
+    workbook.active.append([1])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    response = TestClient(app).post("/files/upload", files={"file": ("data.xlsx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert response.status_code == 200
