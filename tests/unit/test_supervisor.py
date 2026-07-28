@@ -1,5 +1,13 @@
 from app.agents.supervisor.graph import build_supervisor_graph
-from app.schemas import Intent
+from app.schemas import Intent, RequestContext
+
+
+def _context() -> RequestContext:
+    return RequestContext(
+        thread_id="supervisor-test",
+        tenant_id="tenant-a",
+        operator_id="operator-a",
+    )
 
 
 def test_routes_daily_report() -> None:
@@ -23,7 +31,7 @@ def test_supervisor_invokes_data_analysis_subagent_tool() -> None:
 
 
 def test_supervisor_invokes_meeting_minutes_subagent_tool() -> None:
-    result = asyncio.run(build_supervisor_graph().ainvoke({"message": "生成会议纪要", "task_input": {"meeting_id": "m1", "title": "周会", "segments": [{"segment_id": "s1", "text": "确认发布", "confidence": 0.9}]}}))
+    result = asyncio.run(build_supervisor_graph().ainvoke({"message": "生成会议纪要", "task_input": {"meeting_id": "m1", "title": "周会", "segments": [{"segment_id": "s1", "text": "确认发布", "confidence": 0.9}]}}, context=_context()))
     assert result["subagent_result"]["status"] == "draft"
 
 

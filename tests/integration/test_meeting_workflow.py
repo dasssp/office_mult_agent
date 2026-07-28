@@ -15,3 +15,28 @@ def test_meeting_requires_review_before_idempotent_send() -> None:
     second = client.post("/meetings/m1/send", headers=headers)
     assert first.status_code == 200
     assert first.json()["message_id"] == second.json()["message_id"]
+
+
+def test_meeting_minutes_are_isolated_by_tenant() -> None:
+    client = TestClient(app)
+    payload = {
+        "title": "私密会议",
+        "segments": [{"segment_id": "s1", "text": "内部事项", "confidence": 0.9}],
+    }
+    assert (
+        client.post(
+            "/meetings/shared-id/minutes",
+            json=payload,
+            headers={"x-tenant-id": "tenant-a"},
+        ).status_code
+        == 200
+    )
+    response = client.post(
+        "/meetings/shared-id/reviews",
+        json={"approved": True},
+        headers={
+            "x-tenant-id": "tenant-b",
+            "x-permission-scopes": "meeting:review",
+        },
+    )
+    assert response.status_code == 404

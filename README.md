@@ -62,6 +62,7 @@ alembic upgrade head
 
 ```env
 KNOWLEDGE_MCP_URL=http://knowledge-mcp-adapter:8001/mcp
+KNOWLEDGE_MCP_SERVICE_TOKEN=请替换为服务间密钥
 ```
 
 主应用使用 Streamable HTTP 调用 `knowledge_answer_tool`。生产模式缺少 `KNOWLEDGE_MCP_URL` 时会拒绝启动，避免误用开发 Mock。
@@ -70,7 +71,7 @@ KNOWLEDGE_MCP_URL=http://knowledge-mcp-adapter:8001/mcp
 
 仅在配置下列条件后设置 `APP_ENV=production`：
 
-- `DATABASE_URL` 与 `KNOWLEDGE_MCP_URL` 已配置；
+- `DATABASE_URL`、`KNOWLEDGE_MCP_URL` 与 `KNOWLEDGE_MCP_SERVICE_TOKEN` 已配置；
 - 网关注入可信的 `request.state.request_context`；
 - 已接入密钥管理、对象存储、病毒扫描和生产级 DLP；
 - 已替换 Mock 的报告、邮件、IM、任务及 Java RAG 连接器；

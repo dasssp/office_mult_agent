@@ -56,7 +56,9 @@ def call_data_analysis_agent(state: SupervisorState) -> SupervisorState:
     return {"subagent_result": result, "status": "completed"}
 
 
-async def call_meeting_minutes_agent(state: SupervisorState) -> SupervisorState:
+async def call_meeting_minutes_agent(
+    state: SupervisorState, runtime: Runtime[RequestContext]
+) -> SupervisorState:
     payload = state.get("task_input", {})
     meeting_id, title, segments = (
         payload.get("meeting_id"),
@@ -69,7 +71,11 @@ async def call_meeting_minutes_agent(state: SupervisorState) -> SupervisorState:
         or not isinstance(segments, list)
     ):
         return {"status": "failed", "warnings": ["会议纪要需要 meeting_id、title 和 segments。"]}
-    tool = next(item for item in build_subagent_tools() if item.name == "meeting_minutes_tool")
+    tool = next(
+        item
+        for item in build_subagent_tools(runtime.context)
+        if item.name == "meeting_minutes_tool"
+    )
     result = await tool.ainvoke({"meeting_id": meeting_id, "title": title, "segments": segments})
     return {"subagent_result": result, "status": "completed"}
 

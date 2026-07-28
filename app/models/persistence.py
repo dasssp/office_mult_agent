@@ -67,6 +67,9 @@ class FileRecord(Base, TenantModel):
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     byte_size: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    file_type: Mapped[str] = mapped_column(String(32), default="")
     object_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="stored")
 
@@ -111,3 +114,23 @@ class ScheduleRecord(Base, TenantModel):
     task_type: Mapped[str] = mapped_column(String(128))
     payload: Mapped[dict[str, object]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(32), default="active")
+
+
+class MeetingMinutesRecord(Base, TenantModel):
+    __tablename__ = "meeting_minutes"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "meeting_id", name="uq_meeting_minutes_tenant"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    meeting_id: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON)
+
+
+class ArtifactRecord(Base, TenantModel):
+    __tablename__ = "artifacts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64), index=True)
+    object_ref: Mapped[str] = mapped_column(String(512))
+    sha256: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="available")

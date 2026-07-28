@@ -11,9 +11,13 @@ from app.services.sensitive_data import SensitiveDataService
 
 
 class ReportAgent:
-    def __init__(self, repository: InMemoryReportRepository | SqlAlchemyReportRepository | None = None) -> None:
+    def __init__(
+        self,
+        repository: InMemoryReportRepository | SqlAlchemyReportRepository | None = None,
+        idempotency: IdempotencyService | None = None,
+    ) -> None:
         self.repository = repository or InMemoryReportRepository()
-        self._submissions: IdempotencyService[ReportSubmission] = IdempotencyService()
+        self._idempotency = idempotency or IdempotencyService()
         self._sensitive_data = SensitiveDataService()
 
     async def collect_mock_events(self) -> list[WorkEvent]:
@@ -53,9 +57,11 @@ class ReportAgent:
         draft = await self.repository.get(report_id, context)
         if draft is None:
             raise KeyError(report_id)
-        existing = self._submissions.get(report_id, context)
+        existing = await self._idempotency.get(
+            operation="report.submit", key=report_id, context=context
+        )
         if existing is not None:
-            return existing
+            return ReportSubmission.model_validate(existing)
         if draft.status != "approved":
             raise ValueError("report must be approved before submission")
         self._sensitive_data.require_shareable(str(draft.model_dump(mode="json")))
@@ -65,4 +71,10 @@ class ReportAgent:
         await self.repository.save(draft, context)
         await audit.record(action="report.submit", context=context, target_id=report_id)
         submission = ReportSubmission(report_id=report_id, submission_id=result["submission_id"], status="submitted")
-        return self._submissions.remember(report_id, submission, context)
+        stored = await self._idempotency.remember(
+            operation="report.submit",
+            key=report_id,
+            result=submission.model_dump(mode="json"),
+            context=context,
+        )
+        return ReportSubmission.model_validate(stored)

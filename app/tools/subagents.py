@@ -4,9 +4,10 @@ from app.agents.data_analysis_agent import DataAnalysisAgent
 from app.agents.email_polish_agent import EmailPolishAgent
 from app.agents.meeting_minutes_agent import MeetingMinutesAgent
 from app.agents.report_agent import ReportAgent
+from app.schemas import RequestContext
 
 
-def build_subagent_tools():
+def build_subagent_tools(context: RequestContext | None = None):
     """Expose narrow, validated subagent operations to the Supervisor only."""
 
     @tool
@@ -24,9 +25,16 @@ def build_subagent_tools():
         """Create a meeting-minutes draft from supplied transcript segments."""
         from app.schemas.workflows import TranscriptSegment
 
+        if context is None:
+            raise ValueError("trusted request context is required")
         parsed = [TranscriptSegment.model_validate(item) for item in segments]
         # The supervisor tool creates drafts only; review/send remains in the API workflow.
-        draft = await MeetingMinutesAgent().generate(meeting_id=meeting_id, title=title, segments=parsed)
+        draft = await MeetingMinutesAgent().generate(
+            meeting_id=meeting_id,
+            title=title,
+            segments=parsed,
+            context=context,
+        )
         return draft.model_dump()
 
     @tool

@@ -10,6 +10,7 @@ from tempfile import NamedTemporaryFile
 from typing import ClassVar
 from uuid import uuid4
 
+from app.repositories.files import FileRepository
 from app.schemas import RequestContext
 
 
@@ -42,6 +43,7 @@ class FileService:
     storage_dir: Path = field(default_factory=lambda: Path("uploads"))
     max_bytes: int = 2 * 1024 * 1024
     max_rows: int = 10_000
+    repository: FileRepository | None = None
 
     _allowed_types: ClassVar[set[str]] = {"csv", "json", "xlsx", "docx", "pdf"}
     _content_types: ClassVar[dict[str, set[str]]] = {
@@ -64,11 +66,14 @@ class FileService:
         rows = self._parse(suffix, content)
         self._validate_row_count(rows)
         file_id = str(uuid4())
-        storage_path = self.storage_dir / f"{file_id}.{suffix}"
-        await asyncio.to_thread(self.storage_dir.mkdir, parents=True, exist_ok=True)
+        tenant_dir = self.storage_dir / hashlib.sha256(
+            context.tenant_id.encode("utf-8")
+        ).hexdigest()[:24]
+        storage_path = tenant_dir / f"{file_id}.{suffix}"
+        await asyncio.to_thread(tenant_dir.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(storage_path.write_bytes, content)
         self.files[file_id] = rows
-        self.metadata[file_id] = FileMetadata(
+        metadata = FileMetadata(
             file_id=file_id,
             filename=filename,
             content_type=content_type,
@@ -80,14 +85,29 @@ class FileService:
             tenant_id=context.tenant_id,
             created_by=context.operator_id,
         )
+        self.metadata[file_id] = metadata
+        if self.repository is not None:
+            await self.repository.save(metadata, context)
         return file_id
 
     async def get_rows(self, file_id: str, context: RequestContext) -> list[dict[str, object]]:
-        await self.get_metadata(file_id, context)
-        return self.files[file_id]
+        metadata = await self.get_metadata(file_id, context)
+        cached = self.files.get(file_id)
+        if cached is not None:
+            return cached
+        content = await asyncio.to_thread(Path(metadata.storage_ref).read_bytes)
+        rows = self._parse(metadata.file_type, content)
+        self._validate_row_count(rows)
+        self.files[file_id] = rows
+        return rows
 
     async def get_metadata(self, file_id: str, context: RequestContext) -> FileMetadata:
         metadata = self.metadata.get(file_id)
+        if metadata is None and self.repository is not None:
+            stored = await self.repository.get(file_id, context)
+            if stored is not None:
+                metadata = FileMetadata(**stored)  # type: ignore[arg-type]
+                self.metadata[file_id] = metadata
         if metadata is None or metadata.tenant_id != context.tenant_id:
             raise KeyError(file_id)
         return metadata
@@ -95,11 +115,13 @@ class FileService:
     async def delete(self, file_id: str, context: RequestContext) -> None:
         metadata = await self.get_metadata(file_id, context)
         path = Path(metadata.storage_ref)
-        if path.parent.resolve() != self.storage_dir.resolve():
+        if self.storage_dir.resolve() not in path.resolve().parents:
             raise UnsafeFileError("invalid storage reference")
         await asyncio.to_thread(path.unlink, missing_ok=True)
         self.files.pop(file_id, None)
         self.metadata.pop(file_id, None)
+        if self.repository is not None:
+            await self.repository.delete(file_id, context)
 
     def _validate_upload(self, filename: str, content: bytes, content_type: str | None) -> str:
         if not filename or Path(filename).name != filename or len(filename) > 255:

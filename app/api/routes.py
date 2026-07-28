@@ -11,6 +11,7 @@ from app.agents.supervisor import build_supervisor_graph
 from app.config import get_settings
 from app.connectors.mocks.email import MockEmailConnector
 from app.connectors.mocks.report_system import MockReportSystemConnector
+from app.connectors.registry import ConnectorRegistry, ConnectorUnavailableError
 from app.middleware.context import build_development_context
 from app.schemas import (
     AssistantInvokeRequest,
@@ -51,6 +52,10 @@ _meeting_agent = MeetingMinutesAgent()
 _email_connector = MockEmailConnector()
 _files = FileService()
 _artifacts = ArtifactService()
+_connectors = ConnectorRegistry(
+    report_system=_report_connector,
+    email=_email_connector,
+)
 
 
 def _report_agent_for(request: Request) -> ReportAgent:
@@ -71,6 +76,22 @@ def _approvals_for(request: Request) -> ApprovalService:
 
 def _knowledge_agent_for(request: Request) -> KnowledgeAgent:
     return getattr(request.app.state, "knowledge_agent", KnowledgeAgent())
+
+
+def _meeting_agent_for(request: Request) -> MeetingMinutesAgent:
+    return getattr(request.app.state, "meeting_agent", _meeting_agent)
+
+
+def _connectors_for(request: Request) -> ConnectorRegistry:
+    return getattr(request.app.state, "connectors", _connectors)
+
+
+def _files_for(request: Request) -> FileService:
+    return getattr(request.app.state, "files", _files)
+
+
+def _artifacts_for(request: Request) -> ArtifactService:
+    return getattr(request.app.state, "artifacts", _artifacts)
 
 
 @router.get("/health")
@@ -226,7 +247,7 @@ async def submit_report(report_id: str, request: Request) -> ReportSubmission:
         return await _report_agent_for(request).submit(
             report_id=report_id,
             context=context,
-            connector=_report_connector,
+            connector=_connectors_for(request).report_system,
             permissions=_permissions,
             audit=_audit_for(request),
         )
@@ -236,12 +257,20 @@ async def submit_report(report_id: str, request: Request) -> ReportSubmission:
         raise HTTPException(status_code=403, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except ConnectorUnavailableError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @router.post("/meetings/{meeting_id}/minutes", response_model=MeetingMinutesDraft)
-async def generate_minutes(meeting_id: str, payload: MeetingMinutesRequest) -> MeetingMinutesDraft:
-    return await _meeting_agent.generate(
-        meeting_id=meeting_id, title=payload.title, segments=payload.segments
+async def generate_minutes(
+    meeting_id: str, payload: MeetingMinutesRequest, request: Request
+) -> MeetingMinutesDraft:
+    context = build_development_context(request, thread_id=f"meeting:{meeting_id}")
+    return await _meeting_agent_for(request).generate(
+        meeting_id=meeting_id,
+        title=payload.title,
+        segments=payload.segments,
+        context=context,
     )
 
 
@@ -251,7 +280,7 @@ async def review_minutes(
 ) -> MeetingMinutesDraft:
     context = build_development_context(request, thread_id=f"meeting:{meeting_id}")
     try:
-        return await _meeting_agent.review(
+        return await _meeting_agent_for(request).review(
             meeting_id=meeting_id,
             approved=payload.approved,
             comment=payload.comment,
@@ -269,10 +298,10 @@ async def review_minutes(
 async def send_minutes(meeting_id: str, request: Request) -> MeetingEmailStatus:
     context = build_development_context(request, thread_id=f"meeting:{meeting_id}")
     try:
-        return await _meeting_agent.send(
+        return await _meeting_agent_for(request).send(
             meeting_id=meeting_id,
             context=context,
-            connector=_email_connector,
+            connector=_connectors_for(request).email,
             permissions=_permissions,
             audit=_audit,
         )
@@ -282,6 +311,8 @@ async def send_minutes(meeting_id: str, request: Request) -> MeetingEmailStatus:
         raise HTTPException(status_code=403, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except ConnectorUnavailableError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @router.post("/emails/polish", response_model=EmailPolishDraft)
@@ -300,7 +331,9 @@ async def analyze_data(payload: DataAnalysisRequest) -> DataAnalysisResult:
 async def analyze_uploaded_file(file_id: str, request: Request) -> DataAnalysisResult:
     context = build_development_context(request, thread_id=f"file:{file_id}")
     try:
-        return DataAnalysisAgent().analyze(rows=await _files.get_rows(file_id, context))
+        return DataAnalysisAgent().analyze(
+            rows=await _files_for(request).get_rows(file_id, context)
+        )
     except KeyError as error:
         raise HTTPException(status_code=404, detail="file not found") from error
 
@@ -309,8 +342,10 @@ async def analyze_uploaded_file(file_id: str, request: Request) -> DataAnalysisR
 async def export_uploaded_analysis(file_id: str, request: Request) -> dict[str, str]:
     context = build_development_context(request, thread_id=f"file:{file_id}")
     try:
-        result = DataAnalysisAgent().analyze(rows=await _files.get_rows(file_id, context))
-        return await _artifacts.export_analysis(result)
+        result = DataAnalysisAgent().analyze(
+            rows=await _files_for(request).get_rows(file_id, context)
+        )
+        return await _artifacts_for(request).export_analysis(result, context)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="file not found") from error
 
@@ -319,7 +354,7 @@ async def export_uploaded_analysis(file_id: str, request: Request) -> dict[str, 
 async def file_metadata(file_id: str, request: Request) -> dict[str, object]:
     context = build_development_context(request, thread_id=f"file:{file_id}")
     try:
-        return (await _files.get_metadata(file_id, context)).as_dict()
+        return (await _files_for(request).get_metadata(file_id, context)).as_dict()
     except KeyError as error:
         raise HTTPException(status_code=404, detail="file not found") from error
 
@@ -328,7 +363,7 @@ async def file_metadata(file_id: str, request: Request) -> dict[str, object]:
 async def upload_file(request: Request, file: UploadFile = File(...)) -> dict[str, str]:
     context = build_development_context(request, thread_id="file:upload")
     try:
-        file_id = await _files.store_and_parse(
+        file_id = await _files_for(request).store_and_parse(
             filename=file.filename or "",
             content=await file.read(),
             content_type=file.content_type,
@@ -344,7 +379,7 @@ async def delete_file(file_id: str, request: Request) -> dict[str, str]:
     context = build_development_context(request, thread_id=f"file:{file_id}")
     try:
         _permissions.require(context, "file:delete")
-        await _files.delete(file_id, context)
+        await _files_for(request).delete(file_id, context)
         await _audit_for(request).record(action="file.delete", context=context, target_id=file_id)
         return {"file_id": file_id, "status": "deleted"}
     except KeyError as error:

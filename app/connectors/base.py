@@ -11,3 +11,14 @@ class ReportSystemConnector(Protocol):
 
 class KnowledgeConnector(Protocol):
     async def answer(self, *, query: str, context: RequestContext) -> dict: ...
+
+
+class EmailConnector(Protocol):
+    async def send_email(
+        self,
+        *,
+        subject: str,
+        body: str,
+        idempotency_key: str,
+        context: RequestContext,
+    ) -> dict[str, str]: ...
