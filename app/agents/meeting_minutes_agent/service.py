@@ -18,12 +18,14 @@ class MeetingMinutesAgent:
         self._drafts[meeting_id] = draft
         return draft
 
-    async def review(self, *, meeting_id: str, approved: bool, comment: str | None) -> MeetingMinutesDraft:
+    async def review(self, *, meeting_id: str, approved: bool, comment: str | None, context: RequestContext, permissions: PermissionService, audit: AuditService) -> MeetingMinutesDraft:
+        permissions.require(context, "meeting:review")
         draft = self._drafts.get(meeting_id)
         if draft is None:
             raise KeyError(meeting_id)
         draft.status = "approved" if approved else "rejected"
         draft.review_comment = comment
+        audit.record(action="meeting_minutes.review", context=context, target_id=meeting_id)
         return draft
 
     async def send(self, *, meeting_id: str, context: RequestContext, connector: MockEmailConnector, permissions: PermissionService, audit: AuditService) -> MeetingEmailStatus:

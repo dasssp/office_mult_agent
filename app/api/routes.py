@@ -94,11 +94,14 @@ async def generate_minutes(meeting_id: str, payload: MeetingMinutesRequest) -> M
 
 
 @router.post("/meetings/{meeting_id}/reviews", response_model=MeetingMinutesDraft)
-async def review_minutes(meeting_id: str, payload: MeetingReviewRequest) -> MeetingMinutesDraft:
+async def review_minutes(meeting_id: str, payload: MeetingReviewRequest, request: Request) -> MeetingMinutesDraft:
+    context = build_development_context(request, thread_id=f"meeting:{meeting_id}")
     try:
-        return await _meeting_agent.review(meeting_id=meeting_id, approved=payload.approved, comment=payload.comment)
+        return await _meeting_agent.review(meeting_id=meeting_id, approved=payload.approved, comment=payload.comment, context=context, permissions=_permissions, audit=_audit)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="meeting minutes not found") from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
 
 
 @router.post("/meetings/{meeting_id}/send", response_model=MeetingEmailStatus)
