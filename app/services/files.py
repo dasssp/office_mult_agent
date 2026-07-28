@@ -10,6 +10,8 @@ from tempfile import NamedTemporaryFile
 from typing import ClassVar
 from uuid import uuid4
 
+from app.schemas import RequestContext
+
 
 class UnsafeFileError(ValueError):
     pass
@@ -25,6 +27,8 @@ class FileMetadata:
     row_count: int
     file_type: str
     storage_ref: str
+    tenant_id: str
+    created_by: str
     status: str = "stored"
 
     def as_dict(self) -> dict[str, object]:
@@ -49,7 +53,12 @@ class FileService:
     }
 
     async def store_and_parse(
-        self, *, filename: str, content: bytes, content_type: str | None = None
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        context: RequestContext,
+        content_type: str | None = None,
     ) -> str:
         suffix = self._validate_upload(filename, content, content_type)
         rows = self._parse(suffix, content)
@@ -68,21 +77,23 @@ class FileService:
             row_count=len(rows),
             file_type=suffix,
             storage_ref=str(storage_path),
+            tenant_id=context.tenant_id,
+            created_by=context.operator_id,
         )
         return file_id
 
-    async def get_rows(self, file_id: str) -> list[dict[str, object]]:
-        if file_id not in self.files:
-            raise KeyError(file_id)
+    async def get_rows(self, file_id: str, context: RequestContext) -> list[dict[str, object]]:
+        await self.get_metadata(file_id, context)
         return self.files[file_id]
 
-    async def get_metadata(self, file_id: str) -> FileMetadata:
-        if file_id not in self.metadata:
+    async def get_metadata(self, file_id: str, context: RequestContext) -> FileMetadata:
+        metadata = self.metadata.get(file_id)
+        if metadata is None or metadata.tenant_id != context.tenant_id:
             raise KeyError(file_id)
-        return self.metadata[file_id]
+        return metadata
 
-    async def delete(self, file_id: str) -> None:
-        metadata = await self.get_metadata(file_id)
+    async def delete(self, file_id: str, context: RequestContext) -> None:
+        metadata = await self.get_metadata(file_id, context)
         path = Path(metadata.storage_ref)
         if path.parent.resolve() != self.storage_dir.resolve():
             raise UnsafeFileError("invalid storage reference")
@@ -127,7 +138,10 @@ class FileService:
     def _parse_csv(self, text: str) -> list[dict[str, object]]:
         rows = list(csv.DictReader(io.StringIO(text)))
         for row in rows:
-            if any(isinstance(value, str) and value.startswith(("=", "+", "-", "@")) for value in row.values()):
+            if any(
+                isinstance(value, str) and value.startswith(("=", "+", "-", "@"))
+                for value in row.values()
+            ):
                 raise UnsafeFileError("CSV formula injection detected")
         return [dict(row) for row in rows]
 

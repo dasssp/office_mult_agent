@@ -1,10 +1,11 @@
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 
 from app.agents.knowledge_agent import KnowledgeAgent
 from app.agents.supervisor.state import SupervisorState
-from app.schemas import Intent
+from app.schemas import Intent, RequestContext
 from app.services.permissions import PermissionService
 from app.tools import build_subagent_tools
 
@@ -57,8 +58,16 @@ def call_data_analysis_agent(state: SupervisorState) -> SupervisorState:
 
 async def call_meeting_minutes_agent(state: SupervisorState) -> SupervisorState:
     payload = state.get("task_input", {})
-    meeting_id, title, segments = payload.get("meeting_id"), payload.get("title"), payload.get("segments")
-    if not isinstance(meeting_id, str) or not isinstance(title, str) or not isinstance(segments, list):
+    meeting_id, title, segments = (
+        payload.get("meeting_id"),
+        payload.get("title"),
+        payload.get("segments"),
+    )
+    if (
+        not isinstance(meeting_id, str)
+        or not isinstance(title, str)
+        or not isinstance(segments, list)
+    ):
         return {"status": "failed", "warnings": ["会议纪要需要 meeting_id、title 和 segments。"]}
     tool = next(item for item in build_subagent_tools() if item.name == "meeting_minutes_tool")
     result = await tool.ainvoke({"meeting_id": meeting_id, "title": title, "segments": segments})
@@ -75,15 +84,17 @@ async def call_report_agent(state: SupervisorState) -> SupervisorState:
     return {"subagent_result": result, "status": "completed"}
 
 
-async def call_knowledge_agent(state: SupervisorState) -> SupervisorState:
-    context = state.get("context")
-    if context is None:
-        return {"status": "failed", "warnings": ["knowledge query requires trusted request context"]}
+async def call_knowledge_agent(
+    state: SupervisorState,
+    runtime: Runtime[RequestContext],
+    knowledge_agent: KnowledgeAgent | None = None,
+) -> SupervisorState:
+    context = runtime.context
     query = state.get("task_input", {}).get("query", state["message"])
     if not isinstance(query, str) or not query.strip():
         return {"status": "failed", "warnings": ["knowledge query must be a nonempty string"]}
     try:
-        result = await KnowledgeAgent().answer(
+        result = await (knowledge_agent or KnowledgeAgent()).answer(
             query=query, context=context, permissions=PermissionService()
         )
     except PermissionError:
@@ -108,8 +119,15 @@ async def analyze_then_generate_report(state: SupervisorState) -> SupervisorStat
         return {"status": "failed", "warnings": ["复合任务需要 rows 和 report_date。"]}
     tools = {item.name: item for item in build_subagent_tools()}
     analysis = tools["data_analysis_tool"].invoke({"rows": rows})
-    event = {"event_id": "analysis:input", "title": f"完成数据分析：{analysis['row_count']} 行", "status": "completed", "evidence_url": "artifact://analysis/input"}
-    report = await tools["report_draft_tool"].ainvoke({"report_date": report_date, "events": [event]})
+    event = {
+        "event_id": "analysis:input",
+        "title": f"完成数据分析：{analysis['row_count']} 行",
+        "status": "completed",
+        "evidence_url": "artifact://analysis/input",
+    }
+    report = await tools["report_draft_tool"].ainvoke(
+        {"report_date": report_date, "events": [event]}
+    )
     return {"subagent_result": {"analysis": analysis, "report": report}, "status": "completed"}
 
 
@@ -135,17 +153,26 @@ def route_after_report(state: SupervisorState) -> str:
     return "prepare_result"
 
 
-def build_supervisor_graph(checkpointer: BaseCheckpointSaver | None = None):
+def build_supervisor_graph(
+    checkpointer: BaseCheckpointSaver | None = None,
+    knowledge_agent: KnowledgeAgent | None = None,
+):
     # Registered tools are intentionally narrow; state graph keeps orchestration deterministic.
     build_subagent_tools()
-    graph = StateGraph(SupervisorState)
+    graph = StateGraph(SupervisorState, context_schema=RequestContext)
     graph.add_node("parse_request", parse_request)
     graph.add_node("prepare_result", prepare_result)
     graph.add_node("call_email_polish_agent", call_email_polish_agent)
     graph.add_node("call_data_analysis_agent", call_data_analysis_agent)
     graph.add_node("call_meeting_minutes_agent", call_meeting_minutes_agent)
     graph.add_node("call_report_agent", call_report_agent)
-    graph.add_node("call_knowledge_agent", call_knowledge_agent)
+
+    async def configured_knowledge_node(
+        state: SupervisorState, runtime: Runtime[RequestContext]
+    ) -> SupervisorState:
+        return await call_knowledge_agent(state, runtime, knowledge_agent)
+
+    graph.add_node("call_knowledge_agent", configured_knowledge_node)
     graph.add_node("request_human_approval", request_human_approval)
     graph.add_node("analyze_then_generate_report", analyze_then_generate_report)
     graph.add_edge(START, "parse_request")

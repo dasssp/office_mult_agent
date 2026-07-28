@@ -5,13 +5,16 @@ from app.repositories.reports import InMemoryReportRepository
 from app.schemas import RequestContext
 from app.schemas.workflows import ReportDraft, ReportSubmission, WorkEvent
 from app.services.audit import AuditService
+from app.services.idempotency import IdempotencyService
 from app.services.permissions import PermissionService
+from app.services.sensitive_data import SensitiveDataService
 
 
 class ReportAgent:
     def __init__(self, repository: InMemoryReportRepository | SqlAlchemyReportRepository | None = None) -> None:
         self.repository = repository or InMemoryReportRepository()
-        self._submissions: dict[str, ReportSubmission] = {}
+        self._submissions: IdempotencyService[ReportSubmission] = IdempotencyService()
+        self._sensitive_data = SensitiveDataService()
 
     async def collect_mock_events(self) -> list[WorkEvent]:
         return await MockWorkSources().collect_events()
@@ -50,16 +53,16 @@ class ReportAgent:
         draft = await self.repository.get(report_id, context)
         if draft is None:
             raise KeyError(report_id)
-        existing = self._submissions.get(report_id)
+        existing = self._submissions.get(report_id, context)
         if existing is not None:
             return existing
         if draft.status != "approved":
             raise ValueError("report must be approved before submission")
+        self._sensitive_data.require_shareable(str(draft.model_dump(mode="json")))
         key = f"{context.tenant_id}:{context.employee_id}:{draft.report_date}:{report_id}"
         result = await connector.submit_report(report=draft.model_dump(), idempotency_key=key, context=context)
         draft.status = "submitted"
         await self.repository.save(draft, context)
         await audit.record(action="report.submit", context=context, target_id=report_id)
         submission = ReportSubmission(report_id=report_id, submission_id=result["submission_id"], status="submitted")
-        self._submissions[report_id] = submission
-        return submission
+        return self._submissions.remember(report_id, submission, context)

@@ -69,3 +69,45 @@ class FileRecord(Base, TenantModel):
     byte_size: Mapped[int] = mapped_column(Integer)
     object_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="stored")
+
+
+class IdempotencyRecord(Base, TenantModel):
+    __tablename__ = "idempotency_records"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "operation", "idempotency_key", name="uq_idempotency_scope"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    operation: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(256))
+    status: Mapped[str] = mapped_column(String(32))
+    result: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+
+
+class UserMemory(Base, TenantModel):
+    __tablename__ = "user_memories"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "created_by", "memory_key", name="uq_user_memory_key"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    memory_key: Mapped[str] = mapped_column(String(128))
+    memory_value: Mapped[str] = mapped_column(Text)
+    confirmed: Mapped[bool] = mapped_column(default=False)
+
+
+class BackgroundTaskRecord(Base, TenantModel):
+    __tablename__ = "background_tasks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    kind: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class ScheduleRecord(Base, TenantModel):
+    __tablename__ = "schedules"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(128))
+    cron: Mapped[str] = mapped_column(String(128))
+    task_type: Mapped[str] = mapped_column(String(128))
+    payload: Mapped[dict[str, object]] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(32), default="active")

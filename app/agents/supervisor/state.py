@@ -1,6 +1,6 @@
 from typing import TypedDict
 
-from app.schemas import Intent, RequestContext
+from app.schemas import Intent
 
 
 class SupervisorState(TypedDict, total=False):
@@ -12,4 +12,3 @@ class SupervisorState(TypedDict, total=False):
     subagent_result: dict[str, object]
     warnings: list[str]
     approval_comment: str | None
-    context: RequestContext
