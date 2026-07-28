@@ -2,91 +2,61 @@
 
 更新时间：2026-07-28
 
-## 1. 改造策略
+## 已完成阶段
 
-采用渐进式双运行时方案，保留原有固定 StateGraph，通过环境变量切换 Deep Agent。
-现有 Service、Repository、Connector、权限、审批、幂等和审计能力继续作为确定性
-业务底座，避免把关键业务规则迁移到 Prompt。
+### 第一阶段：主运行时
 
-## 2. 阶段与交付
+- 引入 Deep Agents，并保留 `legacy` / `deep_agent` 双运行时切换。
+- 通过 `BaseChatModel` 注入模型，复用 FastAPI API 契约。
+- 接入 LangGraph Checkpointer、递归上限和运行超时。
 
-### 阶段一：主运行时
+### 第二阶段：专业子 Agent
 
-- 增加 `deepagents` 依赖；
-- 新建 `app/orchestration`；
-- 使用 `create_deep_agent` 构建主 Agent；
-- 接入 `BaseChatModel`、RequestContext 和 Checkpointer；
-- 增加 `ASSISTANT_RUNTIME`、`AGENT_MODEL`；
-- 使用适配器保持现有 Assistant API 契约。
+- 注册 Report、Meeting、Email、Data、Knowledge 和受限 General-purpose 子 Agent。
+- Report、Meeting 改为真实 `CompiledSubAgent` 领域子图。
+- 子 Agent 仅持有本领域工具，外部访问统一下沉到 Connector。
 
-### 阶段二：领域子 Agent
+### 第三阶段：动态规划与复杂任务
 
-- 注册报告、会议、邮件、数据和知识五个领域子 Agent；
-- 配置独立系统提示词、专属工具和结构化响应；
-- 限制 `general-purpose` 子 Agent，不向其提供领域工具；
-- 将外部访问统一下沉到 Connector。
+- 使用 `write_todos` 维护计划，使用 `task` 委派子 Agent。
+- 支持无依赖子任务并行委派。
+- 检测失败、阻塞、超时和错误码，并强制先重规划再继续委派。
+- 设置委派次数、计划更新次数、递归深度和总运行时间预算。
 
-### 阶段三：动态规划与复合任务
+### 第四阶段：上下文和长期记忆
 
-- 使用内置 `write_todos` 管理计划；
-- 使用 `task` 工具进行子 Agent 委派；
-- 主 Agent 根据子任务结果更新计划并有限重规划；
-- 最终响应汇总任务、证据、产物和警告；
-- 通过 Prompt 和运行预算限制无界循环。
+- 使用 `StateBackend` 管理线程工作区和大型中间结果。
+- 使用 Deep Agents 自动摘要控制上下文长度。
+- PostgreSQL 模式接入 `AsyncPostgresStore`。
+- 确认记忆按租户和用户隔离，并禁止 Agent 直接写入记忆/策略目录。
 
-### 阶段四：上下文与长期记忆
+### 第五阶段：审核、恢复和长任务
 
-- 使用 `StateBackend` 保存线程级工作区；
-- 使用 Deep Agents 自动摘要和大结果卸载；
-- PostgreSQL 模式接入 `AsyncPostgresStore`；
-- 将确认记忆同步为租户、用户命名空间下的只读文件；
-- 禁止 Agent 直接修改 `/memories` 和 `/policies`。
+- 报告审核/提交、会议纪要审核/发送使用子图 `interrupt`。
+- 使用 `AsyncPostgresSaver` 支持进程重启后的 HITL 恢复。
+- 会议转写改为 PostgreSQL 持久化队列和独立异步 Worker。
+- 支持多 Worker 抢占、超时、重试、取消、崩溃租约回收和结果查询。
 
-### 阶段五：审核恢复与长任务
+### 第六阶段：验证和交付
 
-- 报告审核、报告提交、纪要审核和纪要发送配置工具级 HITL；
-- 将 Deep Agents 审核决策转换到现有恢复 API；
-- 根据待执行工具计算最小权限范围；
-- 将会议 ASR 拆分为启动和查询工具；
-- 使用现有 BackgroundTaskService 持久化进度和失败码。
+- 单元测试覆盖子图结构、工具隔离、动态重规划和 Worker 状态机。
+- SQLite 集成测试覆盖任务持久化与服务重建。
+- PostgreSQL 16 CI 测试覆盖真实检查点中断和跨进程恢复。
+- Docker Compose 同时交付 API、PostgreSQL 和 Worker。
 
-### 阶段六：验证与灰度
+## 灰度建议
 
-- 增加 Agent 架构、工具隔离、权限映射和记忆隔离测试；
-- 保留原有测试作为回归基线；
-- 本地默认使用 `legacy`；
-- 开发租户先启用 `deep_agent`；
-- 只读任务稳定后再启用写操作；
-- 根据任务完成率、工具失败率、审核拒绝率和调用成本决定全量切换。
+1. 本地和 CI 默认保留 `legacy` 作为稳定回归基线。
+2. 测试租户开启 `deep_agent`，先验证只读任务和复杂任务规划。
+3. 再开放报告/会议写操作，观察任务完成率、重规划率、审核拒绝率、恢复成功率和成本。
+4. 真实 Connector、认证网关、DLP、备份和告警全部到位后再生产全量切换。
 
-## 3. 灰度运行
+## 企业接入待办
 
-旧运行时：
+以下属于部署环境接入，不应在仓库内伪造完成：
 
-```env
-ASSISTANT_RUNTIME=legacy
-```
-
-Deep Agent：
-
-```env
-ASSISTANT_RUNTIME=deep_agent
-AGENT_MODEL=供应商:模型名称
-```
-
-模型供应商密钥由部署环境或密钥管理系统注入，不写入仓库。
-
-## 4. 生产接入清单
-
-代码已经提供边界但仍需企业环境提供：
-
-- 真实报工、邮件、IM、ASR、Git、任务和目录 Connector；
-- Java RAG 的正式 REST 契约和服务身份；
-- 认证网关注入的可信 RequestContext；
-- 对象存储、病毒扫描、DLP 和数据保留策略；
-- 独立数据执行沙箱；
-- Worker/队列和任务取消机制；
-- PostgreSQL 备份恢复、TLS 和密钥管理；
-- 指标、追踪和告警平台。
-
-未提供以上接口时，生产模式必须显式失败，不得回退到 Mock 写操作。
+- 真实报工、邮件、IM、ASR、Git、任务和组织目录 Connector；
+- 认证网关、密钥管理、TLS 和细粒度授权策略；
+- 对象存储、病毒扫描、DLP、数据保留和删除策略；
+- PostgreSQL 高可用、备份恢复演练、监控指标和告警平台；
+- 模型效果、成本、延迟和安全红队评估。

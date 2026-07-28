@@ -1,49 +1,88 @@
 # Deep Agent 改造说明
 
-## 架构结果
+更新时间：2026-07-28
 
-当前项目支持两种运行时：
+## 当前架构
 
-- `legacy`：原生 StateGraph 固定意图路由，适合无模型开发和确定性回归；
-- `deep_agent`：一个主 Agent 动态规划并委派五个领域子 Agent。
+项目保留两种运行时：
 
-Deep Agent 模式使用以下能力：
+- `legacy`：固定 StateGraph，适合无模型环境和确定性回归；
+- `deep_agent`：主 Agent 动态规划，并通过 `task` 委派专业子 Agent。
 
-- `write_todos`：动态拆解和维护任务进度；
-- `task`：把任务委派给隔离上下文中的子 Agent；
-- `StateBackend`：线程级工作区和大结果卸载；
-- 自动摘要：长对话接近上下文限制时压缩旧消息；
-- `AsyncPostgresSaver`：线程状态、HITL 和故障恢复；
-- `AsyncPostgresStore`：跨线程存储基础；
-- 工具级 `interrupt_on`：外部写操作人工审核。
+Deep Agent 运行时由以下层次组成：
 
-## 工具权限矩阵
+```text
+主 Agent
+├─ TODO 规划、并行委派、失败检测、动态重规划、结果汇总
+├─ Report CompiledSubAgent（生成 → 审核中断 → 提交中断）
+├─ Meeting CompiledSubAgent（转写入队 / 生成 → 审核中断 → 发送中断）
+├─ Email SubAgent
+├─ Data SubAgent
+├─ Knowledge SubAgent → Java RAG MCP
+└─ General-purpose SubAgent（无领域工具）
+```
 
-| 子 Agent | 只读/草稿工具 | 写工具 | 审核权限 |
-|---|---|---|---|
-| report-agent | 工作事件查询、报告生成 | 审核、提交 | `report:review`、`report:submit` |
-| meeting-agent | 会议信息、ASR、纪要生成 | 审核、发送 | `meeting:review`、`meeting:send` |
-| email-agent | 邮件检查和润色 | 暂无发送工具 | 无 |
-| data-agent | 行分析、文件分析、产物导出 | 仅租户产物写入 | 由文件服务控制 |
-| knowledge-agent | Java RAG MCP 查询 | 无 | `knowledge:read` |
-| general-purpose | 无领域工具 | 无 | 无 |
+Report 和 Meeting 不是一组平铺工具，而是独立编译的 LangGraph 子图。子图继承父图运行时
+上下文和检查点，核心写操作仍由确定性的 Service、Repository 和 Connector 完成。
 
-## 上下文边界
+## 动态规划与重规划
 
-主 Agent 只保留任务计划、结构化结果、证据引用和产物引用。上传文件、转写和知识检索
-明细停留在受控服务或子 Agent 上下文中。已确认记忆会同步到：
+- 复杂请求先使用内置 `write_todos` 生成计划。
+- 无依赖任务可在同一模型轮次并行调用多个 `task`。
+- 中间件检查子任务 ToolMessage；发现 `failed`、`blocked`、`timeout` 或错误码后，会临时
+  移除继续委派能力，要求先调用 `write_todos`。
+- 重规划必须保留已完成项、标记失败项，并增加替代步骤或终止条件。
+- `AGENT_MAX_DELEGATIONS`、`AGENT_MAX_PLAN_UPDATES`、递归上限和运行超时共同防止无限循环。
+
+规划质量仍取决于所选模型，但“失败后不可直接继续委派”和总预算由代码强制执行。
+
+## 上下文压缩与长期记忆
+
+- `StateBackend` 保存线程级工作区，Deep Agents 自动摘要长对话并卸载大型结果。
+- PostgreSQL 模式使用 `AsyncPostgresStore`。
+- 用户明确确认的长期记忆同步到：
 
 ```text
 ("office-multi-agent", tenant_id, operator_id)
-└── /memories/confirmed.md
+└─ /memories/confirmed.md
 ```
 
-该路径对 Agent 只读；新增或修改长期记忆仍必须调用现有确认记忆服务。
+该路径对 Agent 只读，不能通过模型工具直接修改。
 
-## 已知边界
+## 审核与跨进程恢复
 
-- Deep Agent 模式需要真实可用的 LangChain ChatModel；
-- 当前使用同步子 Agent；异步子 Agent 官方能力仍在快速演进；
-- ASR 已提供非阻塞任务协议，但生产 Worker 和真实 ASR Connector 需要企业环境接入；
-- 数据分析使用确定性工具，尚未开放模型生成代码的执行沙箱；
-- 外部企业 Connector 在仓库中仍以 Protocol、Mock 或显式不可用实现交付。
+Report 和 Meeting 子图直接使用 LangGraph `interrupt`，审核决策通过现有恢复 API 转换成
+Deep Agents/LangGraph 决策格式。生产模式使用 `AsyncPostgresSaver`：
+
+1. 子图在外部写操作前中断；
+2. 检查点写入 PostgreSQL；
+3. API 进程可以完全退出；
+4. 新进程使用相同 `thread_id` 和可信 `RequestContext` 恢复；
+5. 权限校验、幂等写入和审计继续执行。
+
+`tests/integration/test_postgres_deep_recovery.py` 专门验证上述重启链路，CI 使用 PostgreSQL 16
+执行该测试。
+
+## 真正的异步长任务
+
+会议转写不再在 HTTP 请求或 Agent 工具调用内部轮询。API/子图只向 `background_tasks`
+表写入任务，独立 `python -m app.workers` 进程消费任务。
+
+队列保证：
+
+- `FOR UPDATE SKIP LOCKED` 支持多 Worker 安全抢占；
+- 任务载荷、结果、进度、尝试次数和错误码持久化；
+- 指数外部策略可通过重试延迟配置扩展，当前采用固定延迟；
+- 支持排队态取消和运行态协作取消；
+- Worker 崩溃后，通过租约超时回收 `running` 任务；
+- 失败详情不写入数据库，只保存稳定错误码，避免泄露敏感正文。
+
+## 尚需企业环境提供
+
+代码已经完成框架和可测试边界，但下列内容不能由仓库伪造：
+
+- 真实报工、邮件、IM、ASR、Git、任务和组织目录 Connector；
+- 认证网关注入可信 `RequestContext`；
+- 生产级对象存储、病毒扫描、DLP 和数据保留策略；
+- PostgreSQL 高可用、备份演练、TLS、密钥管理、指标和告警；
+- 所选模型在真实业务数据上的质量、成本和灰度评估。

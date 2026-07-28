@@ -20,6 +20,7 @@ from app.schemas import (
     AssistantStateResponse,
 )
 from app.schemas.workflows import (
+    BackgroundTaskResponse,
     DataAnalysisRequest,
     DataAnalysisResult,
     EmailPolishDraft,
@@ -40,6 +41,7 @@ from app.services.artifacts import ArtifactService
 from app.services.audit import AuditService
 from app.services.files import FileService, UnsafeFileError
 from app.services.permissions import PermissionService
+from app.services.runtime_state import BackgroundTask, BackgroundTaskService
 
 router = APIRouter()
 _graph = build_supervisor_graph(checkpointer=InMemorySaver())
@@ -53,6 +55,7 @@ _email_connector = MockEmailConnector()
 _files = FileService()
 _artifacts = ArtifactService()
 _connectors = ConnectorRegistry.for_environment("development")
+_background_tasks = BackgroundTaskService()
 
 
 def _report_agent_for(request: Request) -> ReportAgent:
@@ -89,6 +92,24 @@ def _files_for(request: Request) -> FileService:
 
 def _artifacts_for(request: Request) -> ArtifactService:
     return getattr(request.app.state, "artifacts", _artifacts)
+
+
+def _background_tasks_for(request: Request) -> BackgroundTaskService:
+    return getattr(request.app.state, "background_tasks", _background_tasks)
+
+
+def _task_response(task: BackgroundTask) -> BackgroundTaskResponse:
+    return BackgroundTaskResponse(
+        task_id=task.task_id,
+        kind=task.kind,
+        status=task.status,
+        progress=task.progress,
+        attempts=task.attempts,
+        max_attempts=task.max_attempts,
+        cancel_requested=task.cancel_requested,
+        result=task.result,
+        error_code=task.error_code,
+    )
 
 
 @router.get("/health")
@@ -296,6 +317,56 @@ async def generate_minutes(
         segments=payload.segments,
         context=context,
     )
+
+
+@router.post(
+    "/meetings/{meeting_id}/transcriptions",
+    response_model=BackgroundTaskResponse,
+    status_code=202,
+)
+async def start_meeting_transcription(
+    meeting_id: str, request: Request
+) -> BackgroundTaskResponse:
+    context = build_development_context(
+        request, thread_id=f"meeting:{meeting_id}:transcription"
+    )
+    try:
+        _permissions.require(context, "meeting:transcribe")
+        task = await _background_tasks_for(request).create(
+            kind="meeting_transcription",
+            payload={"meeting_id": meeting_id},
+            context=context,
+        )
+        return _task_response(task)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@router.get("/tasks/{task_id}", response_model=BackgroundTaskResponse)
+async def get_background_task(
+    task_id: str, request: Request
+) -> BackgroundTaskResponse:
+    context = build_development_context(request, thread_id=f"task:{task_id}")
+    try:
+        task = await _background_tasks_for(request).get(task_id, context)
+        return _task_response(task)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="task not found") from error
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=BackgroundTaskResponse)
+async def cancel_background_task(
+    task_id: str, request: Request
+) -> BackgroundTaskResponse:
+    context = build_development_context(request, thread_id=f"task:{task_id}")
+    try:
+        _permissions.require(context, "task:cancel")
+        task = await _background_tasks_for(request).cancel(task_id, context)
+        return _task_response(task)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="task not found") from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
 
 
 @router.post("/meetings/{meeting_id}/reviews", response_model=MeetingMinutesDraft)

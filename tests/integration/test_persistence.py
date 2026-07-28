@@ -73,6 +73,15 @@ async def test_report_and_audit_are_persisted_with_tenant_isolation(tmp_path: Pa
     tasks = BackgroundTaskService(runtime_repository)
     task = await tasks.create(kind="analysis", context=context)
     assert (await BackgroundTaskService(runtime_repository).get(task.task_id, context)).status == "queued"
+    restarted_tasks = BackgroundTaskService(runtime_repository)
+    claimed = await restarted_tasks.claim("worker-after-restart")
+    assert claimed is not None
+    assert claimed.task_id == task.task_id
+    assert claimed.attempts == 1
+    await restarted_tasks.succeed(claimed, {"rows": 3})
+    recovered = await BackgroundTaskService(runtime_repository).get(task.task_id, context)
+    assert recovered.status == "succeeded"
+    assert recovered.result == {"rows": 3}
     schedules = ScheduleService(runtime_repository)
     await schedules.create(
         name="daily",

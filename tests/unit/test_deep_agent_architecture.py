@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
@@ -22,6 +22,8 @@ from app.connectors.mocks.enterprise import (
 )
 from app.connectors.mocks.report_system import MockReportSystemConnector
 from app.orchestration import DeepAgentDependencies, DeepAgentRuntime, build_main_deep_agent
+from app.orchestration.domain_graphs import build_report_subgraph
+from app.orchestration.middleware import count_tool_calls, requires_replan
 from app.orchestration.subagents import build_subagent_profiles
 from app.schemas import RequestContext
 from app.services.artifacts import ArtifactService
@@ -73,6 +75,25 @@ def _structured_model() -> ToolCallingFakeChatModel:
     return ToolCallingFakeChatModel(messages=messages)
 
 
+def _report_model(arguments: dict[str, Any]) -> ToolCallingFakeChatModel:
+    messages: Iterator[AIMessage | str] = iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ReportTaskSpec",
+                        "args": arguments,
+                        "id": "report-spec-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        ]
+    )
+    return ToolCallingFakeChatModel(messages=messages)
+
+
 def _dependencies(tmp_path) -> DeepAgentDependencies:
     return DeepAgentDependencies(
         report_agent=ReportAgent(),
@@ -108,30 +129,33 @@ def test_subagents_have_isolated_tool_sets_and_write_interrupts(tmp_path) -> Non
         "knowledge-agent",
     }
     assert by_name["general-purpose"]["tools"] == []
-    assert {tool.name for tool in by_name["report-agent"]["tools"]} == {
-        "collect_work_events",
-        "generate_report_draft",
+    report_nodes = set(by_name["report-agent"]["runnable"].get_graph().nodes)
+    meeting_nodes = set(by_name["meeting-agent"]["runnable"].get_graph().nodes)
+    assert {
+        "parse_report_task",
+        "draft_report",
         "review_report",
         "submit_report",
+        "finalize_report",
+    }.issubset(report_nodes)
+    assert {
+        "parse_meeting_task",
+        "enqueue_transcription",
+        "generate_minutes",
+        "review_minutes",
+        "send_minutes",
+        "finalize_meeting",
+    }.issubset(meeting_nodes)
+    assert {tool.name for tool in by_name["email-agent"]["tools"]} == {
+        "polish_email",
     }
-    assert {tool.name for tool in by_name["meeting-agent"]["tools"]} == {
-        "get_meeting_context",
-        "start_meeting_transcription",
-        "get_meeting_transcription",
-        "generate_meeting_minutes",
-        "review_meeting_minutes",
-        "send_meeting_minutes",
-    }
-    assert set(by_name["report-agent"]["interrupt_on"]) == {
-        "review_report",
-        "submit_report",
-    }
-    assert set(by_name["meeting-agent"]["interrupt_on"]) == {
-        "review_meeting_minutes",
-        "send_meeting_minutes",
+    assert {tool.name for tool in by_name["data-agent"]["tools"]} == {
+        "analyze_rows",
+        "analyze_file",
+        "export_analysis",
     }
     for profile in profiles:
-        for domain_tool in profile["tools"]:
+        for domain_tool in profile.get("tools", []):
             assert "runtime" not in domain_tool.args
 
 
@@ -175,6 +199,97 @@ def test_write_tools_map_to_least_privilege_review_scopes() -> None:
         DeepAgentRuntime._required_scope(["submit_report", "send_meeting_minutes"])
         == "assistant:review"
     )
+
+
+def test_planning_budget_counts_parallel_delegations() -> None:
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "task",
+                    "args": {"description": "分析", "subagent_type": "data-agent"},
+                    "id": "task-1",
+                    "type": "tool_call",
+                },
+                {
+                    "name": "task",
+                    "args": {"description": "检索", "subagent_type": "knowledge-agent"},
+                    "id": "task-2",
+                    "type": "tool_call",
+                },
+            ],
+        )
+    ]
+    assert count_tool_calls(messages, "task") == 2
+    assert count_tool_calls(messages, "write_todos") == 0
+
+
+def test_failed_subtask_requires_plan_update_before_new_delegation() -> None:
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_todos",
+                    "args": {"todos": []},
+                    "id": "plan-1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(
+            content='{"status": "failed", "error_code": "SOURCE_TIMEOUT"}',
+            tool_call_id="task-1",
+        ),
+    ]
+    assert requires_replan(messages) is True
+    messages.append(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_todos",
+                    "args": {"todos": []},
+                    "id": "plan-2",
+                    "type": "tool_call",
+                }
+            ],
+        )
+    )
+    assert requires_replan(messages) is False
+
+
+@pytest.mark.asyncio
+async def test_report_compiled_subgraph_generates_evidence_draft(tmp_path) -> None:
+    context = RequestContext(
+        thread_id="report-subgraph",
+        tenant_id="tenant-a",
+        operator_id="user-a",
+        employee_id="employee-a",
+    )
+    graph = build_report_subgraph(
+        model=_report_model(
+            {
+                "operation": "draft",
+                "report_date": "2026-07-28",
+                "report_type": "daily",
+                "events": [],
+            }
+        ),
+        dependencies=_dependencies(tmp_path),
+        checkpointer=InMemorySaver(),
+    )
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="生成今天的日报")]},
+        {"configurable": {"thread_id": "report-subgraph"}},
+        context=context,
+    )
+
+    assert result["status"] == "completed"
+    assert result["result"]["status"] == "draft"
+    assert result["result"]["evidence_event_ids"]
 
 
 @pytest.mark.asyncio

@@ -158,6 +158,8 @@ async def lifespan(app: FastAPI):
                 dependencies=dependencies,
                 checkpointer=checkpointer,
                 store=store,
+                max_delegations=settings.agent_max_delegations,
+                max_plan_updates=settings.agent_max_plan_updates,
             ),
             memory=app.state.memory,
             store=store,

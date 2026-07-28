@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -104,6 +104,23 @@ class BackgroundTaskRecord(Base, TenantModel):
     status: Mapped[str] = mapped_column(String(32), index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    result: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now().astimezone(),
+        index=True,
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ScheduleRecord(Base, TenantModel):

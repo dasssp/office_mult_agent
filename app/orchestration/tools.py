@@ -208,78 +208,27 @@ def build_meeting_tools(deps: DeepAgentDependencies) -> list[BaseTool]:
         """为会议录音启动受控 ASR 后台任务，立即返回任务标识。"""
         tracked = await deps.background_tasks.create(
             kind="meeting_transcription",
+            payload={"meeting_id": meeting_id},
             context=runtime.context,
         )
-        try:
-            recording = await deps.meeting_connector.get_recording(
-                meeting_id=meeting_id,
-                context=runtime.context,
-            )
-            submitted = await deps.asr.submit_transcription(
-                recording_ref=str(recording["recording_ref"]),
-                context=runtime.context,
-            )
-            await deps.background_tasks.update(
-                task_id=tracked.task_id,
-                status="running",
-                progress=10,
-                context=runtime.context,
-            )
-        except Exception:
-            await deps.background_tasks.update(
-                task_id=tracked.task_id,
-                status="failed",
-                progress=0,
-                error_code="ASR_SUBMIT_FAILED",
-                context=runtime.context,
-            )
-            raise
-        return {
-            "background_task_id": tracked.task_id,
-            "asr_task_id": str(submitted["task_id"]),
-            "status": str(submitted.get("status", "queued")),
-        }
+        return {"background_task_id": tracked.task_id, "status": tracked.status}
 
     @tool
     async def get_meeting_transcription(
         background_task_id: str,
-        asr_task_id: str,
         runtime: ToolRuntime[RequestContext],
     ) -> dict[str, Any]:
         """查询 ASR 长任务；完成后返回转写片段并更新租户级任务状态。"""
-        status = await deps.asr.get_transcription_status(
-            task_id=asr_task_id,
-            context=runtime.context,
+        task = await deps.background_tasks.get(
+            background_task_id,
+            runtime.context,
         )
-        state = str(status.get("status", "running"))
-        if state == "completed":
-            result = await deps.asr.get_transcription_result(
-                task_id=asr_task_id,
-                context=runtime.context,
-            )
-            await deps.background_tasks.update(
-                task_id=background_task_id,
-                status="succeeded",
-                progress=100,
-                context=runtime.context,
-            )
-            return {"status": state, "segments": result.get("segments", [])}
-        if state == "failed":
-            await deps.background_tasks.update(
-                task_id=background_task_id,
-                status="failed",
-                progress=100,
-                error_code="ASR_FAILED",
-                context=runtime.context,
-            )
-        else:
-            await deps.background_tasks.update(
-                task_id=background_task_id,
-                status="running",
-                progress=50,
-                context=runtime.context,
-            )
-        return {"status": state, "segments": []}
+        return {
+            "status": task.status,
+            "progress": task.progress,
+            "result": task.result,
+            "error_code": task.error_code,
+        }
 
     @tool
     async def generate_meeting_minutes(

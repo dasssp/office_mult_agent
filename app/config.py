@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     agent_model: str | None = None
     agent_recursion_limit: int = 48
     agent_timeout_seconds: int = 180
+    agent_max_delegations: int = 8
+    agent_max_plan_updates: int = 3
+    task_worker_poll_seconds: float = 1.0
+    task_worker_timeout_seconds: float = 300
+    task_worker_lease_seconds: int = 360
+    task_worker_retry_delay_seconds: int = 10
     log_level: str = "INFO"
     database_url: str | None = None
     knowledge_mcp_url: str | None = None

@@ -148,6 +148,25 @@ class MeetingEmailStatus(BaseModel):
     status: Literal["sent"]
 
 
+class BackgroundTaskResponse(BaseModel):
+    task_id: str
+    kind: str
+    status: Literal[
+        "queued",
+        "running",
+        "retry_wait",
+        "succeeded",
+        "failed",
+        "cancelled",
+    ]
+    progress: int = Field(ge=0, le=100)
+    attempts: int = Field(ge=0)
+    max_attempts: int = Field(ge=1)
+    cancel_requested: bool
+    result: dict[str, object] | None = None
+    error_code: str | None = None
+
+
 class EmailPolishRequest(BaseModel):
     subject: str
     body: str

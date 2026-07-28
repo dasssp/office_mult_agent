@@ -24,6 +24,8 @@ services:
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_RECURSION_LIMIT: ${AGENT_RECURSION_LIMIT:-48}
       AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-180}
+      AGENT_MAX_DELEGATIONS: ${AGENT_MAX_DELEGATIONS:-8}
+      AGENT_MAX_PLAN_UPDATES: ${AGENT_MAX_PLAN_UPDATES:-3}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
@@ -36,6 +38,22 @@ services:
       - "${APP_PORT:-8000}:8000"
     volumes:
       - uploads_data:/srv/app/uploads
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.workers"]
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-office_app}:${POSTGRES_PASSWORD:-change-me-before-production}@postgres:5432/${POSTGRES_DB:-office_multi_agent}
+      TASK_WORKER_POLL_SECONDS: ${TASK_WORKER_POLL_SECONDS:-1}
+      TASK_WORKER_TIMEOUT_SECONDS: ${TASK_WORKER_TIMEOUT_SECONDS:-300}
+      TASK_WORKER_LEASE_SECONDS: ${TASK_WORKER_LEASE_SECONDS:-360}
+      TASK_WORKER_RETRY_DELAY_SECONDS: ${TASK_WORKER_RETRY_DELAY_SECONDS:-10}
+    healthcheck:
+      disable: true
 
 volumes:
   postgres_data:

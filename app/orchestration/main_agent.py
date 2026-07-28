@@ -14,6 +14,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Command
 
 from app.agents.supervisor.graph import _classify
+from app.orchestration.middleware import PlanningBudgetMiddleware
 from app.orchestration.prompts import MAIN_AGENT_PROMPT
 from app.orchestration.schemas import MainAgentResponse
 from app.orchestration.subagents import build_subagent_profiles
@@ -33,12 +34,20 @@ def build_main_deep_agent(
     dependencies: DeepAgentDependencies,
     checkpointer: BaseCheckpointSaver,
     store: BaseStore | None = None,
+    max_delegations: int = 8,
+    max_plan_updates: int = 3,
 ):
     return create_deep_agent(
         name="office-main-agent",
         model=model,
         tools=build_main_tools(dependencies),
         system_prompt=MAIN_AGENT_PROMPT,
+        middleware=[
+            PlanningBudgetMiddleware(
+                max_delegations=max_delegations,
+                max_plan_updates=max_plan_updates,
+            )
+        ],
         subagents=build_subagent_profiles(model, dependencies),
         response_format=MainAgentResponse,
         context_schema=RequestContext,

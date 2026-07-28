@@ -1,29 +1,22 @@
-# Office Multi-Agent
+# Office Multi-Agent 企业办公助手
 
-## Deep Agent 双运行时
+基于 FastAPI、LangGraph、Deep Agents 和 PostgreSQL 构建的企业级多智能体办公助手。
+系统支持日报/周报、会议纪要、邮件润色、文件分析与图表导出、企业知识问答，并通过
+独立 Java RAG MCP 适配层接入知识库。
 
-项目已支持“一个主 Agent + 多个领域子 Agent”的 Deep Agent 架构。主 Agent 使用
-`write_todos` 规划复杂任务，通过 `task` 委派报告、会议、邮件、数据分析和知识检索
-子 Agent，并利用线程工作区、自动摘要和 PostgreSQL Checkpointer 控制上下文及恢复。
+## 架构亮点
 
-默认继续使用原固定 StateGraph，便于本地无模型运行：
-
-```env
-ASSISTANT_RUNTIME=legacy
-```
-
-启用 Deep Agent：
-
-```env
-ASSISTANT_RUNTIME=deep_agent
-AGENT_MODEL=供应商:模型名称
-```
-
-对应模型密钥必须由部署环境或密钥管理系统注入。外部写操作仍需权限、人工审核、幂等
-和审计，主 Agent 不直接持有企业系统写权限。详细说明见
-[Deep Agent 改造说明](docs/DEEP_AGENT_MIGRATION.md)。
-
-企业内部多智能体办公助手，基于 FastAPI、LangGraph 与 PostgreSQL 构建。系统采用 Supervisor 编排四类专业 Agent：日报、会议纪要、邮件润色和文件分析；Java RAG 通过独立 MCP 适配层接入。
+- 一个主 Agent 负责任务理解、TODO 规划、并行委派、动态重规划和结果汇总。
+- Report、Meeting 使用真实的可编译 LangGraph 领域子图；Email、Data、Knowledge
+  使用隔离工具集的专业子 Agent。
+- 子任务失败后强制先更新计划再继续委派，并限制委派次数、计划更新次数、递归深度和超时。
+- Deep Agents 自动进行上下文摘要，大型中间产物卸载到工作区；确认后的长期记忆按
+  `tenant_id + operator_id` 隔离保存。
+- 报告审核/提交、会议纪要审核/发送通过 LangGraph `interrupt` 中断，使用 PostgreSQL
+  Checkpointer 支持进程重启后的恢复。
+- 会议录音转写进入 PostgreSQL 持久化队列，由独立异步 Worker 执行，支持并发抢占、
+  超时、重试、取消、崩溃租约回收和结果恢复。
+- 外部写操作统一经过权限、人工审核、幂等、敏感信息检查和审计。
 
 ## 本地开发
 
@@ -33,75 +26,114 @@ python -m pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
-运行质量检查：
+默认运行确定性的旧版 StateGraph，适合无模型密钥的本地回归：
+
+```env
+ASSISTANT_RUNTIME=legacy
+```
+
+启用 Deep Agent：
+
+```env
+ASSISTANT_RUNTIME=deep_agent
+AGENT_MODEL=提供商模型名称
+```
+
+模型密钥必须由部署环境或密钥管理系统注入，不得写入仓库。
+
+## 容器化启动
+
+复制 `.env.example` 为 `.env`，至少修改数据库密码和所需模型/MCP 配置：
+
+```powershell
+docker compose up --build -d
+Invoke-RestMethod http://localhost:8000/ready
+```
+
+Compose 会启动：
+
+- `postgres`：业务数据、LangGraph 检查点和长期存储；
+- `app`：执行 Alembic 迁移后启动 FastAPI；
+- `worker`：独立消费持久化异步任务。
+
+停止服务使用 `docker compose down`。只有明确需要删除本地数据时才使用 `-v`。
+
+## 异步长任务
+
+创建会议转写任务：
+
+```http
+POST /meetings/{meeting_id}/transcriptions
+X-Permission-Scopes: meeting:transcribe
+```
+
+查询和取消：
+
+```http
+GET  /tasks/{task_id}
+POST /tasks/{task_id}/cancel
+X-Permission-Scopes: task:cancel
+```
+
+Worker 可单独运行：
+
+```powershell
+python -m app.workers
+```
+
+关键参数：
+
+```env
+TASK_WORKER_POLL_SECONDS=1
+TASK_WORKER_TIMEOUT_SECONDS=300
+TASK_WORKER_LEASE_SECONDS=360
+TASK_WORKER_RETRY_DELAY_SECONDS=10
+```
+
+租约时间应大于单任务超时。Worker 异常退出后，其他 Worker 会回收超过租约的任务。
+
+## PostgreSQL 与恢复
+
+```powershell
+docker compose up -d postgres
+alembic upgrade head
+```
+
+生产模式使用 `AsyncPostgresSaver` 保存 Agent/HITL 状态，使用
+`AsyncPostgresStore` 保存跨线程长期数据。恢复时必须复用原 `thread_id`，身份仍从可信
+运行上下文注入，不从检查点反序列化。
+
+## Java RAG MCP
+
+```env
+KNOWLEDGE_MCP_URL=http://knowledge-mcp-adapter:8001/mcp
+KNOWLEDGE_MCP_SERVICE_TOKEN=由密钥系统注入
+```
+
+主应用只调用 MCP 工具，不在 Python 项目中重复实现 RAG。生产模式缺少 MCP 地址或服务
+令牌时会拒绝启动。
+
+## 质量检查
 
 ```powershell
 pytest
 ruff check .
 mypy app
+docker compose config --quiet
 ```
 
-## 容器化交付
-
-复制 `.env.example` 为 `.env`，替换其中的 `POSTGRES_PASSWORD`，然后启动本地交付环境：
+设置 `TEST_DATABASE_URL` 后可运行 PostgreSQL 重启恢复测试：
 
 ```powershell
-docker compose up --build -d
-Invoke-RestMethod http://localhost:8000/ready
-.\scripts\demo.ps1
+pytest tests/integration/test_postgres_deep_recovery.py -q
 ```
 
-镜像会在启动 Uvicorn 前执行 Alembic 迁移，并提供 `/health` 存活检查和 `/ready` 就绪检查。使用 `docker compose down` 停止服务；只有明确需要删除本地 PostgreSQL 数据和上传文件时，才应追加 `-v`。
+CI 包含 PostgreSQL 16 服务，会执行迁移并验证 HITL 跨进程恢复。
 
-## PostgreSQL 与工作流恢复
+## 生产接入边界
 
-可先单独启动数据库：
+仓库提供 Connector Protocol、Mock 和显式不可用实现，但不会伪装为已经接通真实企业系统。
+上线前仍需接入真实报工、邮件、IM、ASR、Git、任务和目录 Connector，并配置认证网关、
+对象存储、病毒扫描、DLP、TLS、备份恢复、指标追踪和告警。
 
-```powershell
-docker compose up -d postgres
-```
-
-在 `.env` 中设置 `DATABASE_URL` 为 asyncpg 连接串后，执行版本化迁移：
-
-```powershell
-alembic upgrade head
-```
-
-生产模式使用 `AsyncPostgresSaver` 保存 LangGraph 工作流检查点，可在审批中断后恢复；请求身份上下文不会写入检查点。业务数据表按租户隔离，包含报告、审计、审批、幂等、确认记忆、后台任务与调度记录。
-
-## 人工审批
-
-调用 `POST /assistant/invoke` 时传入 `require_approval: true`，报告草稿会在任何外部写操作前中断，并返回 `awaiting_approval`。具备 `report:review` 权限的操作人可调用 `POST /assistant/{thread_id}/resume` 并传入：
-
-```json
-{"approved": true, "comment": "审核通过"}
-```
-
-`GET /assistant/{thread_id}/state` 仅向同一租户返回待审批状态。审批记录在数据库模式下持久化，且只能被消费一次。
-
-## Java RAG MCP
-
-生产环境需要配置独立 Java RAG MCP 适配层地址：
-
-```env
-KNOWLEDGE_MCP_URL=http://knowledge-mcp-adapter:8001/mcp
-KNOWLEDGE_MCP_SERVICE_TOKEN=请替换为服务间密钥
-```
-
-主应用使用 Streamable HTTP 调用 `knowledge_answer_tool`。生产模式缺少 `KNOWLEDGE_MCP_URL` 时会拒绝启动，避免误用开发 Mock。
-
-## 生产安全要求
-
-仅在配置下列条件后设置 `APP_ENV=production`：
-
-- `DATABASE_URL`、`KNOWLEDGE_MCP_URL` 与 `KNOWLEDGE_MCP_SERVICE_TOKEN` 已配置；
-- 网关注入可信的 `request.state.request_context`；
-- 已接入密钥管理、对象存储、病毒扫描和生产级 DLP；
-- 已替换 Mock 的报告、邮件、IM、任务及 Java RAG 连接器；
-- 已建立 PostgreSQL 备份恢复、任务队列、调度执行器和可观测性平台。
-
-开发环境可从请求头构造 Mock 身份；生产环境拒绝此方式。响应会返回请求标识和基础浏览器安全响应头；请求体受 `MAX_REQUEST_BODY_BYTES` 限制。敏感数据检测会在报告提交、会议纪要发送等外部写入前执行。
-
-完整交付状态见 [docs/OPTIMIZATION_STATUS.md](docs/OPTIMIZATION_STATUS.md)。
-
-P1 核心能力扩展见 [docs/P1_OPTIMIZATION_STATUS.md](docs/P1_OPTIMIZATION_STATUS.md)。
+详细改造说明见 [Deep Agent 改造说明](docs/DEEP_AGENT_MIGRATION.md)。

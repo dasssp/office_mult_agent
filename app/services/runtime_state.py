@@ -1,5 +1,6 @@
+import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, Protocol
 from uuid import uuid4
 
@@ -16,7 +17,14 @@ class ConfirmedMemory:
     confirmed_at: datetime
 
 
-TaskStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
+TaskStatus = Literal[
+    "queued",
+    "running",
+    "retry_wait",
+    "succeeded",
+    "failed",
+    "cancelled",
+]
 
 
 @dataclass
@@ -24,9 +32,19 @@ class BackgroundTask:
     task_id: str
     tenant_id: str
     kind: str
+    operator_id: str = ""
     status: TaskStatus = "queued"
     progress: int = 0
     error_code: str | None = None
+    payload: dict[str, object] | None = None
+    result: dict[str, object] | None = None
+    attempts: int = 0
+    max_attempts: int = 3
+    available_at: datetime | None = None
+    locked_at: datetime | None = None
+    locked_by: str | None = None
+    cancel_requested: bool = False
+    finished_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +72,16 @@ class RuntimeStateRepository(Protocol):
         self, task_id: str, context: RequestContext
     ) -> BackgroundTask | None: ...
 
+    async def claim_next_task(
+        self, *, worker_id: str, now: datetime, lease_timeout_seconds: int
+    ) -> BackgroundTask | None: ...
+
+    async def save_claimed_task(self, task: BackgroundTask) -> BackgroundTask: ...
+
+    async def request_task_cancel(
+        self, task_id: str, context: RequestContext
+    ) -> BackgroundTask | None: ...
+
     async def save_schedule(
         self, schedule: Schedule, context: RequestContext
     ) -> Schedule: ...
@@ -66,6 +94,7 @@ class InMemoryRuntimeStateRepository:
         self._memories: dict[tuple[str, str, str], ConfirmedMemory] = {}
         self._tasks: dict[tuple[str, str], BackgroundTask] = {}
         self._schedules: dict[tuple[str, str], Schedule] = {}
+        self._task_lock = asyncio.Lock()
 
     async def save_memory(
         self, item: ConfirmedMemory, context: RequestContext
@@ -90,6 +119,64 @@ class InMemoryRuntimeStateRepository:
         self, task_id: str, context: RequestContext
     ) -> BackgroundTask | None:
         return self._tasks.get((context.tenant_id, task_id))
+
+    async def claim_next_task(
+        self, *, worker_id: str, now: datetime, lease_timeout_seconds: int
+    ) -> BackgroundTask | None:
+        async with self._task_lock:
+            for task in self._tasks.values():
+                available_at = task.available_at or now
+                stale_running = (
+                    task.status == "running"
+                    and task.locked_at is not None
+                    and task.locked_at
+                    <= now - timedelta(seconds=lease_timeout_seconds)
+                )
+                if (
+                    not stale_running
+                    and (
+                        task.status not in {"queued", "retry_wait"}
+                        or available_at > now
+                    )
+                ):
+                    continue
+                if task.cancel_requested:
+                    task.status = "cancelled"
+                    task.finished_at = now
+                    continue
+                if stale_running and task.attempts >= task.max_attempts:
+                    task.status = "failed"
+                    task.error_code = "TASK_LEASE_EXPIRED"
+                    task.finished_at = now
+                    continue
+                task.status = "running"
+                task.attempts += 1
+                task.progress = max(task.progress, 5)
+                task.locked_by = worker_id
+                task.locked_at = now
+                return task
+        return None
+
+    async def save_claimed_task(self, task: BackgroundTask) -> BackgroundTask:
+        async with self._task_lock:
+            key = (task.tenant_id, task.task_id)
+            if key not in self._tasks:
+                raise KeyError(task.task_id)
+            self._tasks[key] = task
+            return task
+
+    async def request_task_cancel(
+        self, task_id: str, context: RequestContext
+    ) -> BackgroundTask | None:
+        async with self._task_lock:
+            task = self._tasks.get((context.tenant_id, task_id))
+            if task is None:
+                return None
+            task.cancel_requested = True
+            if task.status in {"queued", "retry_wait"}:
+                task.status = "cancelled"
+                task.finished_at = datetime.now().astimezone()
+            return task
 
     async def save_schedule(
         self, schedule: Schedule, context: RequestContext
@@ -132,8 +219,25 @@ class BackgroundTaskService:
     def __init__(self, repository: RuntimeStateRepository | None = None) -> None:
         self._repository = repository or InMemoryRuntimeStateRepository()
 
-    async def create(self, *, kind: str, context: RequestContext) -> BackgroundTask:
-        task = BackgroundTask(task_id=str(uuid4()), tenant_id=context.tenant_id, kind=kind)
+    async def create(
+        self,
+        *,
+        kind: str,
+        context: RequestContext,
+        payload: dict[str, object] | None = None,
+        max_attempts: int = 3,
+    ) -> BackgroundTask:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        task = BackgroundTask(
+            task_id=str(uuid4()),
+            tenant_id=context.tenant_id,
+            operator_id=context.operator_id,
+            kind=kind,
+            payload=payload or {},
+            max_attempts=max_attempts,
+            available_at=datetime.now().astimezone(),
+        )
         return await self._repository.save_task(task, context)
 
     async def update(
@@ -158,6 +262,60 @@ class BackgroundTaskService:
         if task is None:
             raise KeyError(task_id)
         return task
+
+    async def cancel(
+        self, task_id: str, context: RequestContext
+    ) -> BackgroundTask:
+        task = await self._repository.request_task_cancel(task_id, context)
+        if task is None:
+            raise KeyError(task_id)
+        return task
+
+    async def claim(
+        self, worker_id: str, *, lease_timeout_seconds: int = 360
+    ) -> BackgroundTask | None:
+        return await self._repository.claim_next_task(
+            worker_id=worker_id,
+            now=datetime.now().astimezone(),
+            lease_timeout_seconds=lease_timeout_seconds,
+        )
+
+    async def succeed(
+        self,
+        task: BackgroundTask,
+        result: dict[str, object],
+    ) -> BackgroundTask:
+        task.status = "succeeded"
+        task.progress = 100
+        task.result = result
+        task.error_code = None
+        task.locked_at = None
+        task.locked_by = None
+        task.finished_at = datetime.now().astimezone()
+        return await self._repository.save_claimed_task(task)
+
+    async def fail(
+        self,
+        task: BackgroundTask,
+        *,
+        error_code: str,
+        retry_delay_seconds: int,
+    ) -> BackgroundTask:
+        task.error_code = error_code
+        task.locked_at = None
+        task.locked_by = None
+        if task.cancel_requested:
+            task.status = "cancelled"
+            task.finished_at = datetime.now().astimezone()
+        elif task.attempts < task.max_attempts:
+            task.status = "retry_wait"
+            task.available_at = datetime.now().astimezone() + timedelta(
+                seconds=max(0, retry_delay_seconds)
+            )
+        else:
+            task.status = "failed"
+            task.finished_at = datetime.now().astimezone()
+        return await self._repository.save_claimed_task(task)
 
 
 class ScheduleService:

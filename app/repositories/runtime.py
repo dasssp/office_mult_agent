@@ -1,4 +1,6 @@
-from sqlalchemy import select
+from datetime import datetime, timedelta
+
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -135,6 +137,15 @@ class SqlAlchemyRuntimeStateRepository:
                         status=task.status,
                         progress=task.progress,
                         error_code=task.error_code,
+                        payload=task.payload or {},
+                        result=task.result,
+                        attempts=task.attempts,
+                        max_attempts=task.max_attempts,
+                        available_at=task.available_at or datetime.now().astimezone(),
+                        locked_at=task.locked_at,
+                        locked_by=task.locked_by,
+                        cancel_requested=task.cancel_requested,
+                        finished_at=task.finished_at,
                     )
                 )
             elif record.tenant_id != context.tenant_id:
@@ -143,6 +154,15 @@ class SqlAlchemyRuntimeStateRepository:
                 record.status = task.status
                 record.progress = task.progress
                 record.error_code = task.error_code
+                record.payload = task.payload or {}
+                record.result = task.result
+                record.attempts = task.attempts
+                record.max_attempts = task.max_attempts
+                record.available_at = task.available_at or datetime.now().astimezone()
+                record.locked_at = task.locked_at
+                record.locked_by = task.locked_by
+                record.cancel_requested = task.cancel_requested
+                record.finished_at = task.finished_at
                 record.version += 1
             await session.commit()
         return task
@@ -158,18 +178,128 @@ class SqlAlchemyRuntimeStateRepository:
                 )
             )
             row = result.scalar_one_or_none()
-            return (
-                BackgroundTask(
-                    task_id=row.id,
-                    tenant_id=row.tenant_id,
-                    kind=row.kind,
-                    status=row.status,  # type: ignore[arg-type]
-                    progress=row.progress,
-                    error_code=row.error_code,
+            return self._to_task(row) if row is not None else None
+
+    async def claim_next_task(
+        self, *, worker_id: str, now: datetime, lease_timeout_seconds: int
+    ) -> BackgroundTask | None:
+        stale_before = now - timedelta(seconds=lease_timeout_seconds)
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(BackgroundTaskRecord)
+                    .where(
+                        or_(
+                            and_(
+                                BackgroundTaskRecord.status.in_(
+                                    ("queued", "retry_wait")
+                                ),
+                                BackgroundTaskRecord.available_at <= now,
+                            ),
+                            and_(
+                                BackgroundTaskRecord.status == "running",
+                                BackgroundTaskRecord.locked_at <= stale_before,
+                            ),
+                        )
+                    )
+                    .order_by(
+                        BackgroundTaskRecord.available_at,
+                        BackgroundTaskRecord.created_at,
+                    )
+                    .with_for_update(skip_locked=True)
+                    .limit(1)
                 )
-                if row is not None
-                else None
-            )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    return None
+                if row.cancel_requested:
+                    row.status = "cancelled"
+                    row.finished_at = now
+                    row.version += 1
+                    return None
+                if row.status == "running" and row.attempts >= row.max_attempts:
+                    row.status = "failed"
+                    row.error_code = "TASK_LEASE_EXPIRED"
+                    row.finished_at = now
+                    row.version += 1
+                    return None
+                row.status = "running"
+                row.attempts += 1
+                row.progress = max(row.progress, 5)
+                row.locked_by = worker_id
+                row.locked_at = now
+                row.version += 1
+            return self._to_task(row)
+
+    async def save_claimed_task(self, task: BackgroundTask) -> BackgroundTask:
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(BackgroundTaskRecord)
+                    .where(
+                        BackgroundTaskRecord.id == task.task_id,
+                        BackgroundTaskRecord.tenant_id == task.tenant_id,
+                    )
+                    .with_for_update()
+                )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    raise KeyError(task.task_id)
+                row.status = task.status
+                row.progress = task.progress
+                row.error_code = task.error_code
+                row.result = task.result
+                row.available_at = task.available_at or datetime.now().astimezone()
+                row.locked_at = task.locked_at
+                row.locked_by = task.locked_by
+                row.cancel_requested = task.cancel_requested
+                row.finished_at = task.finished_at
+                row.version += 1
+            return task
+
+    async def request_task_cancel(
+        self, task_id: str, context: RequestContext
+    ) -> BackgroundTask | None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(BackgroundTaskRecord)
+                    .where(
+                        BackgroundTaskRecord.id == task_id,
+                        BackgroundTaskRecord.tenant_id == context.tenant_id,
+                    )
+                    .with_for_update()
+                )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    return None
+                row.cancel_requested = True
+                if row.status in {"queued", "retry_wait"}:
+                    row.status = "cancelled"
+                    row.finished_at = datetime.now().astimezone()
+                row.version += 1
+            return self._to_task(row)
+
+    @staticmethod
+    def _to_task(row: BackgroundTaskRecord) -> BackgroundTask:
+        return BackgroundTask(
+            task_id=row.id,
+            tenant_id=row.tenant_id,
+            operator_id=row.created_by,
+            kind=row.kind,
+            status=row.status,  # type: ignore[arg-type]
+            progress=row.progress,
+            error_code=row.error_code,
+            payload=row.payload,
+            result=row.result,
+            attempts=row.attempts,
+            max_attempts=row.max_attempts,
+            available_at=row.available_at,
+            locked_at=row.locked_at,
+            locked_by=row.locked_by,
+            cancel_requested=row.cancel_requested,
+            finished_at=row.finished_at,
+        )
 
     async def save_schedule(
         self, schedule: Schedule, context: RequestContext

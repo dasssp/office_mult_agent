@@ -1,15 +1,17 @@
 from typing import cast
 
-from deepagents.middleware.subagents import SubAgent
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from langchain_core.language_models import BaseChatModel
 
+from app.orchestration.domain_graphs import (
+    build_meeting_subgraph,
+    build_report_subgraph,
+)
 from app.orchestration.prompts import (
     DATA_PROMPT,
     EMAIL_PROMPT,
     GENERAL_PURPOSE_PROMPT,
     KNOWLEDGE_PROMPT,
-    MEETING_PROMPT,
-    REPORT_PROMPT,
 )
 from app.orchestration.schemas import SubAgentOutcome
 from app.orchestration.tools import (
@@ -17,17 +19,15 @@ from app.orchestration.tools import (
     build_data_tools,
     build_email_tools,
     build_knowledge_tools,
-    build_meeting_tools,
-    build_report_tools,
 )
 
 
 def build_subagent_profiles(
     model: BaseChatModel,
     deps: DeepAgentDependencies,
-) -> list[SubAgent]:
+) -> list[SubAgent | CompiledSubAgent]:
     return cast(
-        list[SubAgent],
+        list[SubAgent | CompiledSubAgent],
         [
         {
             "name": "general-purpose",
@@ -39,31 +39,17 @@ def build_subagent_profiles(
         },
         {
             "name": "report-agent",
-            "description": "生成、审核和受控提交日报或周报；处理工作事件与证据。",
-            "system_prompt": REPORT_PROMPT,
-            "tools": build_report_tools(deps),
-            "model": model,
-            "interrupt_on": {
-                "review_report": {"allowed_decisions": ["approve", "reject"]},
-                "submit_report": {"allowed_decisions": ["approve", "reject"]},
-            },
-            "response_format": SubAgentOutcome,
+            "description": (
+                "可恢复报告领域子图：采集证据、生成日报周报、审核和幂等提交。"
+            ),
+            "runnable": build_report_subgraph(model=model, dependencies=deps),
         },
         {
             "name": "meeting-agent",
-            "description": "根据转写生成、审核并受控发送会议纪要。",
-            "system_prompt": MEETING_PROMPT,
-            "tools": build_meeting_tools(deps),
-            "model": model,
-            "interrupt_on": {
-                "review_meeting_minutes": {
-                    "allowed_decisions": ["approve", "reject"]
-                },
-                "send_meeting_minutes": {
-                    "allowed_decisions": ["approve", "reject"]
-                },
-            },
-            "response_format": SubAgentOutcome,
+            "description": (
+                "可恢复会议领域子图：生成纪要、人工审核和幂等发送。"
+            ),
+            "runnable": build_meeting_subgraph(model=model, dependencies=deps),
         },
         {
             "name": "email-agent",
