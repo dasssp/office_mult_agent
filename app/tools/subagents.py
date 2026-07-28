@@ -3,6 +3,7 @@ from langchain_core.tools import tool
 from app.agents.data_analysis_agent import DataAnalysisAgent
 from app.agents.email_polish_agent import EmailPolishAgent
 from app.agents.meeting_minutes_agent import MeetingMinutesAgent
+from app.agents.report_agent import ReportAgent
 
 
 def build_subagent_tools():
@@ -28,4 +29,12 @@ def build_subagent_tools():
         draft = await MeetingMinutesAgent().generate(meeting_id=meeting_id, title=title, segments=parsed)
         return draft.model_dump()
 
-    return [email_polish_tool, data_analysis_tool, meeting_minutes_tool]
+    @tool
+    async def report_draft_tool(report_date: str, events: list[dict[str, object]]) -> dict:
+        """Create an evidence-backed report draft. It never submits a report."""
+        from app.schemas.workflows import WorkEvent
+
+        parsed = [WorkEvent.model_validate(item) for item in events]
+        return (await ReportAgent().generate_daily(report_date=report_date, events=parsed)).model_dump()
+
+    return [data_analysis_tool, email_polish_tool, meeting_minutes_tool, report_draft_tool]

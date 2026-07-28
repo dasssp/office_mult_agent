@@ -59,6 +59,16 @@ async def call_meeting_minutes_agent(state: SupervisorState) -> SupervisorState:
     return {"subagent_result": result, "status": "completed"}
 
 
+async def call_report_agent(state: SupervisorState) -> SupervisorState:
+    payload = state.get("task_input", {})
+    report_date, events = payload.get("report_date"), payload.get("events")
+    if not isinstance(report_date, str) or not isinstance(events, list):
+        return {"status": "failed", "warnings": ["日报需要 report_date 和 events。"]}
+    tool = next(item for item in build_subagent_tools() if item.name == "report_draft_tool")
+    result = await tool.ainvoke({"report_date": report_date, "events": events})
+    return {"subagent_result": result, "status": "completed"}
+
+
 def route_after_parse(state: SupervisorState) -> str:
     if state["intent"] is Intent.EMAIL_POLISH:
         return "call_email_polish_agent"
@@ -66,6 +76,8 @@ def route_after_parse(state: SupervisorState) -> str:
         return "call_data_analysis_agent"
     if state["intent"] is Intent.MEETING_MINUTES:
         return "call_meeting_minutes_agent"
+    if state["intent"] in {Intent.DAILY_REPORT, Intent.WEEKLY_REPORT}:
+        return "call_report_agent"
     return "prepare_result"
 
 
@@ -78,10 +90,12 @@ def build_supervisor_graph():
     graph.add_node("call_email_polish_agent", call_email_polish_agent)
     graph.add_node("call_data_analysis_agent", call_data_analysis_agent)
     graph.add_node("call_meeting_minutes_agent", call_meeting_minutes_agent)
+    graph.add_node("call_report_agent", call_report_agent)
     graph.add_edge(START, "parse_request")
     graph.add_conditional_edges("parse_request", route_after_parse)
     graph.add_edge("call_email_polish_agent", "prepare_result")
     graph.add_edge("call_data_analysis_agent", "prepare_result")
     graph.add_edge("call_meeting_minutes_agent", "prepare_result")
+    graph.add_edge("call_report_agent", "prepare_result")
     graph.add_edge("prepare_result", END)
     return graph.compile()
