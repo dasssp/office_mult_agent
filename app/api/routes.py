@@ -23,6 +23,7 @@ from app.schemas.workflows import (
     ReportReviewRequest,
     ReportSubmission,
 )
+from app.services.artifacts import ArtifactService
 from app.services.audit import AuditService
 from app.services.files import FileService, UnsafeFileError
 from app.services.permissions import PermissionService
@@ -36,6 +37,7 @@ _audit = AuditService()
 _meeting_agent = MeetingMinutesAgent()
 _email_connector = MockEmailConnector()
 _files = FileService()
+_artifacts = ArtifactService()
 
 
 @router.get("/health")
@@ -133,6 +135,15 @@ async def analyze_data(payload: DataAnalysisRequest) -> DataAnalysisResult:
 async def analyze_uploaded_file(file_id: str) -> DataAnalysisResult:
     try:
         return DataAnalysisAgent().analyze(rows=await _files.get_rows(file_id))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="file not found") from error
+
+
+@router.post("/analysis/files/{file_id}/export")
+async def export_uploaded_analysis(file_id: str) -> dict[str, str]:
+    try:
+        result = DataAnalysisAgent().analyze(rows=await _files.get_rows(file_id))
+        return await _artifacts.export_analysis(result)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="file not found") from error
 

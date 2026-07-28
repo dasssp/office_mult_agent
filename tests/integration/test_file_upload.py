@@ -20,6 +20,9 @@ def test_analyze_uploaded_file() -> None:
     uploaded = client.post("/files/upload", files={"file": ("data.json", '[{"amount": 1}, {"amount": null}]', "application/json")})
     result = client.post(f"/analysis/files/{uploaded.json()['file_id']}")
     assert result.json()["null_counts"] == {"amount": 1}
+    exported = client.post(f"/analysis/files/{uploaded.json()['file_id']}/export")
+    assert exported.status_code == 200
+    assert exported.json()["chart_svg"].endswith(".svg")
 
 
 def test_upload_xlsx() -> None:
