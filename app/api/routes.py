@@ -8,6 +8,7 @@ from app.agents.knowledge_agent import KnowledgeAgent
 from app.agents.meeting_minutes_agent import MeetingMinutesAgent
 from app.agents.report_agent import ReportAgent
 from app.agents.supervisor import build_supervisor_graph
+from app.config import get_settings
 from app.connectors.mocks.email import MockEmailConnector
 from app.connectors.mocks.report_system import MockReportSystemConnector
 from app.middleware.context import build_development_context
@@ -62,6 +63,13 @@ def _audit_for(request: Request) -> AuditService:
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/ready")
+async def readiness(request: Request) -> dict[str, str]:
+    if get_settings().app_env == "production" and not hasattr(request.app.state, "database"):
+        raise HTTPException(status_code=503, detail="database is not initialized")
+    return {"status": "ready"}
 
 
 @router.post("/assistant/invoke", response_model=AssistantInvokeResponse)

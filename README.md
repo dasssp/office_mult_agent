@@ -23,4 +23,8 @@ The current persistence boundary stores tenant-scoped report drafts and audit ev
 
 Send `require_approval: true` to `POST /assistant/invoke` for a report task. The workflow pauses before any external write and returns `awaiting_approval`. An operator with `report:review` resumes the same checkpoint through `POST /assistant/{thread_id}/resume` with `{"approved": true|false, "comment": "..."}`. `GET /assistant/{thread_id}/state` exposes only the pending state for the same tenant.
 
+## Production safeguards
+
+Set `APP_ENV=production` only after configuring `DATABASE_URL` and a gateway authentication middleware that injects `request.state.request_context`. Development header-based identities are rejected in production. Every response includes a request identifier and baseline browser security headers; request bodies are capped by `MAX_REQUEST_BODY_BYTES`.
+
 开发环境会从请求头构造 Mock 身份；生产环境必须替换为已验证的认证提供方。

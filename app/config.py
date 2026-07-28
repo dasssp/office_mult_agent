@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -7,9 +8,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_name: str = "office-multi-agent"
-    app_env: str = "development"
+    app_env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
     database_url: str | None = None
+    max_request_body_bytes: int = 2 * 1024 * 1024
 
 
 @lru_cache

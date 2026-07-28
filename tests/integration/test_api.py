@@ -6,6 +6,10 @@ from app.main import app
 def test_health_and_assistant_invoke() -> None:
     client = TestClient(app)
     assert client.get("/health").json() == {"status": "ok"}
+    readiness = client.get("/ready")
+    assert readiness.json() == {"status": "ready"}
+    assert readiness.headers["x-content-type-options"] == "nosniff"
+    assert readiness.headers["x-request-id"]
     response = client.post("/assistant/invoke", json={"thread_id": "thread-1", "message": "帮我生成日报"})
     assert response.status_code == 200
     assert response.json()["intent"] == "daily_report"
@@ -33,3 +37,9 @@ def test_supervisor_routes_knowledge_with_trusted_context() -> None:
     assert response.status_code == 200
     assert response.json()["intent"] == "knowledge_qa"
     assert response.json()["status"] == "completed"
+
+
+def test_runtime_rejects_oversized_request_before_parsing() -> None:
+    client = TestClient(app)
+    response = client.post("/assistant/invoke", content=b"x", headers={"content-length": "9999999"})
+    assert response.status_code == 413
