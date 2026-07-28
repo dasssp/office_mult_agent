@@ -2,18 +2,31 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: office_multi_agent
-      POSTGRES_USER: office_app
-      POSTGRES_PASSWORD: change-me
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-office_multi_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-office_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-before-production}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U office_app -d office_multi_agent"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-office_app}:${POSTGRES_PASSWORD:-change-me-before-production}@postgres:5432/${POSTGRES_DB:-office_multi_agent}
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-2097152}
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      - uploads_data:/srv/app/uploads
+
 volumes:
   postgres_data:
+  uploads_data:

@@ -9,6 +9,18 @@ uvicorn app.main:app --reload
 pytest
 ```
 
+## Container delivery
+
+Copy `.env.example` to `.env`, replace `POSTGRES_PASSWORD`, then start the local delivery stack:
+
+```powershell
+docker compose up --build -d
+Invoke-RestMethod http://localhost:8000/ready
+.\scripts\demo.ps1
+```
+
+The image runs Alembic migrations before Uvicorn starts and exposes `/health` for liveness and `/ready` for readiness. Stop it with `docker compose down`; add `-v` only when intentionally deleting local PostgreSQL and upload data.
+
 ## PostgreSQL
 
 Start the local database with `docker compose up -d postgres`, then set `DATABASE_URL` to the asyncpg URL in `.env`. Apply the versioned schema before starting the API:
@@ -26,5 +38,7 @@ Send `require_approval: true` to `POST /assistant/invoke` for a report task. The
 ## Production safeguards
 
 Set `APP_ENV=production` only after configuring `DATABASE_URL` and a gateway authentication middleware that injects `request.state.request_context`. Development header-based identities are rejected in production. Every response includes a request identifier and baseline browser security headers; request bodies are capped by `MAX_REQUEST_BODY_BYTES`.
+
+The Compose stack is a local delivery/demo stack because it uses Mock connectors and the development identity adapter by default. A production rollout additionally requires a gateway that injects verified identities, a secret manager, an object-storage connector, a live Java RAG contract, a PostgreSQL backup/restore policy, and a persistent LangGraph checkpointer.
 
 开发环境会从请求头构造 Mock 身份；生产环境必须替换为已验证的认证提供方。
