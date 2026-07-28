@@ -1,40 +1,42 @@
-# Eight-point optimization status
+# 八项优化交付说明
 
-Updated: 2026-07-28
+更新时间：2026-07-28
 
-## Implemented
+## 已完成内容
 
-1. **PostgreSQL workflow recovery**
-   - Production uses `AsyncPostgresSaver`; schema setup runs during application startup.
-   - `RequestContext` is runtime-only and is no longer serialized into checkpoints.
-   - Strict LangGraph msgpack mode is enabled.
-2. **Independent MCP knowledge boundary**
-   - `McpKnowledgeConnector` invokes `knowledge_answer_tool` over Streamable HTTP.
-   - `KNOWLEDGE_MCP_URL` selects the real connector; the local mock remains explicitly
-     development-only.
-3. **Tenant and identity controls**
-   - Trusted runtime context is injected separately from LLM-controlled inputs.
-   - File metadata, reads, analysis, export and deletion are tenant-scoped.
-4. **Shared safety services**
-   - Approval records are tenant-scoped and PostgreSQL-backed in database mode.
-   - External report/meeting writes use a tenant-scoped idempotency service.
-   - A replaceable sensitive-data guard blocks obvious credentials, identity numbers and
-     phone numbers before external sharing.
-5. **Persistence schema**
-   - Migration `20260728_02` adds idempotency records, confirmed memory, background tasks
-     and schedules.
-6. **Business agents**
-   - Report and meeting write paths enforce permission, approval, sensitive-data checks,
-     idempotency and audit.
-   - Email polishing and data analysis remain draft/read-only operations.
-7. **Runtime foundations**
-   - Confirmed-memory, background-task and five-field cron schedule services are present.
-   - HTTP completion logs contain request ID, route, status and duration, never request body.
-8. **Verification and delivery**
-   - Unit and integration tests cover tenant isolation, approval single-use, idempotency,
-     sensitive-data blocking, memory confirmation, task state and schedules.
+1. **PostgreSQL 工作流恢复**
+   - 生产模式使用 `AsyncPostgresSaver`，应用启动时自动初始化检查点表。
+   - `RequestContext` 仅作为运行时上下文传入，不会序列化到检查点。
+   - 已启用严格 LangGraph msgpack 模式。
 
-## Deployment configuration
+2. **独立 MCP 知识库边界**
+   - `McpKnowledgeConnector` 通过 Streamable HTTP 调用 `knowledge_answer_tool`。
+   - 使用 `KNOWLEDGE_MCP_URL` 启用真实连接器；本地 Mock 仅限开发环境。
+
+3. **租户与身份控制**
+   - 可信运行时上下文与 LLM 可控输入分离。
+   - 文件元数据、读取、分析、导出和删除均按租户隔离。
+
+4. **共享安全服务**
+   - 审批记录按租户隔离，数据库模式下由 PostgreSQL 持久化。
+   - 报告与会议纪要的外部写入使用租户范围的幂等服务。
+   - 可替换的敏感数据检测会在外部分享前识别明显的凭据、身份证号和手机号。
+
+5. **持久化结构**
+   - 迁移 `20260728_02` 新增幂等记录、确认记忆、后台任务和调度表。
+
+6. **业务 Agent 安全链路**
+   - 报告提交和会议纪要发送会执行权限、审批、敏感数据、幂等和审计检查。
+   - 邮件润色和数据分析仍为草稿/只读能力，不会直接触发外部写入。
+
+7. **运行能力基础**
+   - 已提供确认后记忆、后台任务状态和五段式 Cron 调度服务。
+   - HTTP 完成日志只记录请求标识、路由、状态和耗时，不记录请求正文。
+
+8. **验证与交付**
+   - 单元测试和集成测试覆盖租户隔离、审批单次消费、幂等、敏感数据、确认记忆、任务状态与调度。
+
+## 部署配置
 
 ```env
 DATABASE_URL=postgresql+asyncpg://office_app:password@postgres:5432/office_multi_agent
@@ -42,17 +44,14 @@ LANGGRAPH_STRICT_MSGPACK=true
 KNOWLEDGE_MCP_URL=http://knowledge-mcp-adapter:8001/mcp
 ```
 
-Run migrations before the API:
+启动 API 前执行迁移：
 
 ```bash
 alembic upgrade head
 ```
 
-## Explicit remaining production integrations
+## 尚需接入的生产能力
 
-The repository does not claim that company systems are connected. Production still requires
-company-provided authentication/gateway integration, Java RAG identity propagation and REST
-contract, object storage and malware scanning, real report/email/IM/Git/task connectors, a
-queue worker, a scheduler executor, a DLP service, secrets management, and an observability
-backend. Current service boundaries and mocks are intended to let those integrations be added
-without moving credentials or HTTP calls into Agent nodes.
+本仓库不会宣称已接通企业系统。生产部署仍需由企业提供并接入：认证网关与身份注入、Java RAG 身份透传及 REST 契约、对象存储与病毒扫描、真实的报告/邮件/IM/Git/任务连接器、任务队列、调度执行器、DLP、密钥管理和可观测性后端。
+
+当前的服务边界与 Mock 旨在支持后续接入，同时避免在 Agent 节点中直接处理凭据或发起 HTTP 请求。

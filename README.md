@@ -1,17 +1,26 @@
 # Office Multi-Agent
 
-企业内部 Multi-Agent 办公助手。当前完成第一阶段的可运行基础工程：可信请求上下文、FastAPI、基础 LangGraph 路由、Mock Connector 和测试。
+企业内部多智能体办公助手，基于 FastAPI、LangGraph 与 PostgreSQL 构建。系统采用 Supervisor 编排四类专业 Agent：日报、会议纪要、邮件润色和文件分析；Java RAG 通过独立 MCP 适配层接入。
+
+## 本地开发
 
 ```powershell
 conda activate office-multi-agent
 python -m pip install -e ".[dev]"
 uvicorn app.main:app --reload
-pytest
 ```
 
-## Container delivery
+运行质量检查：
 
-Copy `.env.example` to `.env`, replace `POSTGRES_PASSWORD`, then start the local delivery stack:
+```powershell
+pytest
+ruff check .
+mypy app
+```
+
+## 容器化交付
+
+复制 `.env.example` 为 `.env`，替换其中的 `POSTGRES_PASSWORD`，然后启动本地交付环境：
 
 ```powershell
 docker compose up --build -d
@@ -19,26 +28,54 @@ Invoke-RestMethod http://localhost:8000/ready
 .\scripts\demo.ps1
 ```
 
-The image runs Alembic migrations before Uvicorn starts and exposes `/health` for liveness and `/ready` for readiness. Stop it with `docker compose down`; add `-v` only when intentionally deleting local PostgreSQL and upload data.
+镜像会在启动 Uvicorn 前执行 Alembic 迁移，并提供 `/health` 存活检查和 `/ready` 就绪检查。使用 `docker compose down` 停止服务；只有明确需要删除本地 PostgreSQL 数据和上传文件时，才应追加 `-v`。
 
-## PostgreSQL
+## PostgreSQL 与工作流恢复
 
-Start the local database with `docker compose up -d postgres`, then set `DATABASE_URL` to the asyncpg URL in `.env`. Apply the versioned schema before starting the API:
+可先单独启动数据库：
+
+```powershell
+docker compose up -d postgres
+```
+
+在 `.env` 中设置 `DATABASE_URL` 为 asyncpg 连接串后，执行版本化迁移：
 
 ```powershell
 alembic upgrade head
 ```
 
-The current persistence boundary stores tenant-scoped report drafts and audit events. Database schema also reserves tables for agent threads/runs, approval tasks, and file metadata; uploaded source content remains outside the database and must be stored through an authorized object-storage connector.
+生产模式使用 `AsyncPostgresSaver` 保存 LangGraph 工作流检查点，可在审批中断后恢复；请求身份上下文不会写入检查点。业务数据表按租户隔离，包含报告、审计、审批、幂等、确认记忆、后台任务与调度记录。
 
-## Human approval
+## 人工审批
 
-Send `require_approval: true` to `POST /assistant/invoke` for a report task. The workflow pauses before any external write and returns `awaiting_approval`. An operator with `report:review` resumes the same checkpoint through `POST /assistant/{thread_id}/resume` with `{"approved": true|false, "comment": "..."}`. `GET /assistant/{thread_id}/state` exposes only the pending state for the same tenant.
+调用 `POST /assistant/invoke` 时传入 `require_approval: true`，报告草稿会在任何外部写操作前中断，并返回 `awaiting_approval`。具备 `report:review` 权限的操作人可调用 `POST /assistant/{thread_id}/resume` 并传入：
 
-## Production safeguards
+```json
+{"approved": true, "comment": "审核通过"}
+```
 
-Set `APP_ENV=production` only after configuring `DATABASE_URL` and a gateway authentication middleware that injects `request.state.request_context`. Development header-based identities are rejected in production. Every response includes a request identifier and baseline browser security headers; request bodies are capped by `MAX_REQUEST_BODY_BYTES`.
+`GET /assistant/{thread_id}/state` 仅向同一租户返回待审批状态。审批记录在数据库模式下持久化，且只能被消费一次。
 
-The Compose stack is a local delivery/demo stack because it uses Mock connectors and the development identity adapter by default. A production rollout additionally requires a gateway that injects verified identities, a secret manager, an object-storage connector, a live Java RAG contract, a PostgreSQL backup/restore policy, and a persistent LangGraph checkpointer.
+## Java RAG MCP
 
-开发环境会从请求头构造 Mock 身份；生产环境必须替换为已验证的认证提供方。
+生产环境需要配置独立 Java RAG MCP 适配层地址：
+
+```env
+KNOWLEDGE_MCP_URL=http://knowledge-mcp-adapter:8001/mcp
+```
+
+主应用使用 Streamable HTTP 调用 `knowledge_answer_tool`。生产模式缺少 `KNOWLEDGE_MCP_URL` 时会拒绝启动，避免误用开发 Mock。
+
+## 生产安全要求
+
+仅在配置下列条件后设置 `APP_ENV=production`：
+
+- `DATABASE_URL` 与 `KNOWLEDGE_MCP_URL` 已配置；
+- 网关注入可信的 `request.state.request_context`；
+- 已接入密钥管理、对象存储、病毒扫描和生产级 DLP；
+- 已替换 Mock 的报告、邮件、IM、任务及 Java RAG 连接器；
+- 已建立 PostgreSQL 备份恢复、任务队列、调度执行器和可观测性平台。
+
+开发环境可从请求头构造 Mock 身份；生产环境拒绝此方式。响应会返回请求标识和基础浏览器安全响应头；请求体受 `MAX_REQUEST_BODY_BYTES` 限制。敏感数据检测会在报告提交、会议纪要发送等外部写入前执行。
+
+完整交付状态见 [docs/OPTIMIZATION_STATUS.md](docs/OPTIMIZATION_STATUS.md)。
