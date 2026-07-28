@@ -5,7 +5,7 @@ from app.schemas import Intent
 def test_routes_daily_report() -> None:
     result = asyncio.run(build_supervisor_graph().ainvoke({"message": "请生成今天的日报", "task_input": {"report_date": "2026-07-28", "events": []}}))
     assert result["intent"] is Intent.DAILY_REPORT
-    assert result["status"] == "routed"
+    assert result["status"] == "completed"
 
 
 def test_supervisor_invokes_email_subagent_tool() -> None:
