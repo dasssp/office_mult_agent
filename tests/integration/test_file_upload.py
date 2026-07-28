@@ -1,5 +1,6 @@
 from io import BytesIO
 
+from docx import Document
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
@@ -28,4 +29,13 @@ def test_upload_xlsx() -> None:
     buffer = BytesIO()
     workbook.save(buffer)
     response = TestClient(app).post("/files/upload", files={"file": ("data.xlsx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert response.status_code == 200
+
+
+def test_upload_docx() -> None:
+    document = Document()
+    document.add_paragraph("仅供提取的文本")
+    buffer = BytesIO()
+    document.save(buffer)
+    response = TestClient(app).post("/files/upload", files={"file": ("note.docx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")})
     assert response.status_code == 200

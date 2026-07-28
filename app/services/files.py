@@ -2,6 +2,7 @@ import csv
 import io
 import json
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from uuid import uuid4
@@ -20,10 +21,14 @@ class FileService:
         if len(content) > self.max_bytes:
             raise UnsafeFileError("file exceeds maximum size")
         suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        if suffix not in {"csv", "json", "xlsx"}:
-            raise UnsafeFileError("only CSV, JSON and XLSX are supported")
+        if suffix not in {"csv", "json", "xlsx", "docx", "pdf"}:
+            raise UnsafeFileError("unsupported file type")
         if suffix == "xlsx":
             rows = self._parse_xlsx(content)
+        elif suffix == "docx":
+            rows = [{"text": self._parse_docx(content)}]
+        elif suffix == "pdf":
+            rows = [{"text": self._parse_pdf(content)}]
         else:
             text = content.decode("utf-8-sig")
             rows = self._parse_csv(text) if suffix == "csv" else self._parse_json(text)
@@ -69,3 +74,13 @@ class FileService:
             return result
         finally:
             path.unlink(missing_ok=True)
+
+    def _parse_docx(self, content: bytes) -> str:
+        from docx import Document
+
+        return "\n".join(paragraph.text for paragraph in Document(BytesIO(content)).paragraphs)
+
+    def _parse_pdf(self, content: bytes) -> str:
+        from pypdf import PdfReader
+
+        return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(content)).pages)
