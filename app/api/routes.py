@@ -40,6 +40,14 @@ _files = FileService()
 _artifacts = ArtifactService()
 
 
+def _report_agent_for(request: Request) -> ReportAgent:
+    return getattr(request.app.state, "report_agent", _report_agent)
+
+
+def _audit_for(request: Request) -> AuditService:
+    return getattr(request.app.state, "audit", _audit)
+
+
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -60,16 +68,18 @@ async def invoke_assistant(payload: AssistantInvokeRequest, request: Request) ->
 
 
 @router.post("/reports/generate", response_model=ReportDraft)
-async def generate_report(payload: ReportGenerateRequest) -> ReportDraft:
-    events = payload.events or (await _report_agent.collect_mock_events() if payload.use_mock_sources else [])
-    return await _report_agent.generate_daily(report_date=payload.report_date, events=events)
+async def generate_report(payload: ReportGenerateRequest, request: Request) -> ReportDraft:
+    context = build_development_context(request, thread_id=f"report:new:{payload.report_date}")
+    agent = _report_agent_for(request)
+    events = payload.events or (await agent.collect_mock_events() if payload.use_mock_sources else [])
+    return await agent.generate_daily(report_date=payload.report_date, events=events, context=context)
 
 
 @router.post("/reports/{report_id}/review", response_model=ReportDraft)
 async def review_report(report_id: str, payload: ReportReviewRequest, request: Request) -> ReportDraft:
     context = build_development_context(request, thread_id=f"report:{report_id}")
     try:
-        return await _report_agent.review(report_id=report_id, approved=payload.approved, comment=payload.comment, context=context, permissions=_permissions, audit=_audit)
+        return await _report_agent_for(request).review(report_id=report_id, approved=payload.approved, comment=payload.comment, context=context, permissions=_permissions, audit=_audit_for(request))
     except KeyError as error:
         raise HTTPException(status_code=404, detail="report not found") from error
     except PermissionError as error:
@@ -80,9 +90,9 @@ async def review_report(report_id: str, payload: ReportReviewRequest, request: R
 async def submit_report(report_id: str, request: Request) -> ReportSubmission:
     context = build_development_context(request, thread_id=f"report:{report_id}")
     try:
-        return await _report_agent.submit(
+        return await _report_agent_for(request).submit(
             report_id=report_id, context=context, connector=_report_connector,
-            permissions=_permissions, audit=_audit,
+            permissions=_permissions, audit=_audit_for(request),
         )
     except KeyError as error:
         raise HTTPException(status_code=404, detail="report not found") from error

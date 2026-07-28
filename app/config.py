@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     app_name: str = "office-multi-agent"
     app_env: str = "development"
     log_level: str = "INFO"
+    database_url: str | None = None
 
 
 @lru_cache

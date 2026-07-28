@@ -25,7 +25,7 @@ class MeetingMinutesAgent:
             raise KeyError(meeting_id)
         draft.status = "approved" if approved else "rejected"
         draft.review_comment = comment
-        audit.record(action="meeting_minutes.review", context=context, target_id=meeting_id)
+        await audit.record(action="meeting_minutes.review", context=context, target_id=meeting_id)
         return draft
 
     async def send(self, *, meeting_id: str, context: RequestContext, connector: MockEmailConnector, permissions: PermissionService, audit: AuditService) -> MeetingEmailStatus:
@@ -41,5 +41,5 @@ class MeetingMinutesAgent:
         draft.status = "sent"
         result = MeetingEmailStatus(meeting_id=meeting_id, message_id=sent["message_id"], status="sent")
         self._sent[meeting_id] = result
-        audit.record(action="meeting_minutes.send", context=context, target_id=meeting_id)
+        await audit.record(action="meeting_minutes.send", context=context, target_id=meeting_id)
         return result
