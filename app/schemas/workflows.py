@@ -95,3 +95,20 @@ class DataAnalysisResult(BaseModel):
     columns: list[str]
     null_counts: dict[str, int]
     status: Literal["completed"]
+
+
+class KnowledgeCitation(BaseModel):
+    document_id: str
+    chunk_id: str
+    title: str
+
+
+class KnowledgeAnswer(BaseModel):
+    answer: str
+    citations: list[KnowledgeCitation]
+    warnings: list[str] = Field(default_factory=list)
+    status: Literal["completed", "insufficient_evidence"]
+
+
+class KnowledgeQueryRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)

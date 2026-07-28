@@ -4,6 +4,7 @@ from langgraph.types import Command
 
 from app.agents.data_analysis_agent import DataAnalysisAgent
 from app.agents.email_polish_agent import EmailPolishAgent
+from app.agents.knowledge_agent import KnowledgeAgent
 from app.agents.meeting_minutes_agent import MeetingMinutesAgent
 from app.agents.report_agent import ReportAgent
 from app.agents.supervisor import build_supervisor_graph
@@ -21,6 +22,8 @@ from app.schemas.workflows import (
     DataAnalysisResult,
     EmailPolishDraft,
     EmailPolishRequest,
+    KnowledgeAnswer,
+    KnowledgeQueryRequest,
     MeetingEmailStatus,
     MeetingMinutesDraft,
     MeetingMinutesRequest,
@@ -66,7 +69,9 @@ async def invoke_assistant(payload: AssistantInvokeRequest, request: Request) ->
     context = build_development_context(request, payload.thread_id)
     task_input = {**payload.task_input, "require_approval": payload.require_approval}
     config = {"configurable": {"thread_id": payload.thread_id}}
-    result = await _graph.ainvoke({"message": payload.message, "task_input": task_input}, config)
+    result = await _graph.ainvoke(
+        {"message": payload.message, "task_input": task_input, "context": context}, config
+    )
     if "__interrupt__" in result:
         _pending_approval_tenants[payload.thread_id] = context.tenant_id
         state = await _graph.aget_state(config)
@@ -87,6 +92,17 @@ async def invoke_assistant(payload: AssistantInvokeRequest, request: Request) ->
         message=result["result_message"],
         warnings=result["warnings"],
     )
+
+
+@router.post("/knowledge/answer", response_model=KnowledgeAnswer)
+async def answer_knowledge(payload: KnowledgeQueryRequest, request: Request) -> KnowledgeAnswer:
+    context = build_development_context(request, thread_id="knowledge:query")
+    try:
+        return await KnowledgeAgent().answer(
+            query=payload.query, context=context, permissions=_permissions
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
 
 
 def _require_pending_approval(thread_id: str, request: Request) -> None:

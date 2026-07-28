@@ -2,8 +2,10 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from app.agents.knowledge_agent import KnowledgeAgent
 from app.agents.supervisor.state import SupervisorState
 from app.schemas import Intent
+from app.services.permissions import PermissionService
 from app.tools import build_subagent_tools
 
 
@@ -73,6 +75,22 @@ async def call_report_agent(state: SupervisorState) -> SupervisorState:
     return {"subagent_result": result, "status": "completed"}
 
 
+async def call_knowledge_agent(state: SupervisorState) -> SupervisorState:
+    context = state.get("context")
+    if context is None:
+        return {"status": "failed", "warnings": ["knowledge query requires trusted request context"]}
+    query = state.get("task_input", {}).get("query", state["message"])
+    if not isinstance(query, str) or not query.strip():
+        return {"status": "failed", "warnings": ["knowledge query must be a nonempty string"]}
+    try:
+        result = await KnowledgeAgent().answer(
+            query=query, context=context, permissions=PermissionService()
+        )
+    except PermissionError:
+        return {"status": "failed", "warnings": ["knowledge:read permission is required"]}
+    return {"subagent_result": result.model_dump(), "status": result.status}
+
+
 def request_human_approval(state: SupervisorState) -> SupervisorState:
     """Pause after a draft is prepared; this node has no external side effects."""
     decision = interrupt({"kind": "report_approval", "draft": state.get("subagent_result", {})})
@@ -106,6 +124,8 @@ def route_after_parse(state: SupervisorState) -> str:
         return "call_report_agent"
     if state["intent"] is Intent.COMPOSITE_TASK:
         return "analyze_then_generate_report"
+    if state["intent"] is Intent.KNOWLEDGE_QA:
+        return "call_knowledge_agent"
     return "prepare_result"
 
 
@@ -125,6 +145,7 @@ def build_supervisor_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node("call_data_analysis_agent", call_data_analysis_agent)
     graph.add_node("call_meeting_minutes_agent", call_meeting_minutes_agent)
     graph.add_node("call_report_agent", call_report_agent)
+    graph.add_node("call_knowledge_agent", call_knowledge_agent)
     graph.add_node("request_human_approval", request_human_approval)
     graph.add_node("analyze_then_generate_report", analyze_then_generate_report)
     graph.add_edge(START, "parse_request")
@@ -133,6 +154,7 @@ def build_supervisor_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_edge("call_data_analysis_agent", "prepare_result")
     graph.add_edge("call_meeting_minutes_agent", "prepare_result")
     graph.add_conditional_edges("call_report_agent", route_after_report)
+    graph.add_edge("call_knowledge_agent", "prepare_result")
     graph.add_edge("request_human_approval", "prepare_result")
     graph.add_edge("analyze_then_generate_report", "prepare_result")
     graph.add_edge("prepare_result", END)

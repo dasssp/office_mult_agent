@@ -9,3 +9,27 @@ def test_health_and_assistant_invoke() -> None:
     response = client.post("/assistant/invoke", json={"thread_id": "thread-1", "message": "帮我生成日报"})
     assert response.status_code == 200
     assert response.json()["intent"] == "daily_report"
+
+
+def test_knowledge_query_requires_permission_and_returns_citations() -> None:
+    client = TestClient(app)
+    forbidden = client.post("/knowledge/answer", json={"query": "leave policy"})
+    assert forbidden.status_code == 403
+    allowed = client.post(
+        "/knowledge/answer",
+        json={"query": "leave policy"},
+        headers={"x-permission-scopes": "knowledge:read"},
+    )
+    assert allowed.json()["citations"][0]["document_id"] == "mock-policy-1"
+
+
+def test_supervisor_routes_knowledge_with_trusted_context() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/assistant/invoke",
+        json={"thread_id": "knowledge-thread", "message": "knowledge leave policy"},
+        headers={"x-permission-scopes": "knowledge:read"},
+    )
+    assert response.status_code == 200
+    assert response.json()["intent"] == "knowledge_qa"
+    assert response.json()["status"] == "completed"
