@@ -42,7 +42,9 @@
 - 单元测试覆盖子图结构、工具隔离、动态重规划和 Worker 状态机。
 - SQLite 集成测试覆盖任务持久化与服务重建。
 - PostgreSQL 16 CI 测试覆盖真实检查点中断和跨进程恢复。
-- Docker Compose 同时交付 API、PostgreSQL 和 Worker。
+- Redis 对 GitLab 活动、带引用知识问答和确认记忆实施隔离缓存与回源降级。
+- GitLab Events API 通过独立 Connector 接入，CI 迁移到 `.gitlab-ci.yml`。
+- Docker Compose 同时交付 API、PostgreSQL、Redis 和 Worker。
 
 ## 灰度建议
 
@@ -55,7 +57,7 @@
 
 以下属于部署环境接入，不应在仓库内伪造完成：
 
-- 真实报工、邮件、IM、ASR、Git、任务和组织目录 Connector；
+- 真实报工、邮件、IM、ASR、任务和组织目录 Connector；
 - 认证网关、密钥管理、TLS 和细粒度授权策略；
 - 对象存储、病毒扫描、DLP、数据保留和删除策略；
 - PostgreSQL 高可用、备份恢复演练、监控指标和告警平台；

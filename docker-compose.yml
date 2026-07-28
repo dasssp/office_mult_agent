@@ -1,4 +1,22 @@
 services:
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -18,6 +36,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       APP_ENV: ${APP_ENV:-development}
       ASSISTANT_RUNTIME: ${ASSISTANT_RUNTIME:-legacy}
@@ -30,6 +50,14 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-office_app}:${POSTGRES_PASSWORD:-change-me-before-production}@postgres:5432/${POSTGRES_DB:-office_multi_agent}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-office-multi-agent}
+      REDIS_DEFAULT_TTL_SECONDS: ${REDIS_DEFAULT_TTL_SECONDS:-120}
+      REDIS_KNOWLEDGE_TTL_SECONDS: ${REDIS_KNOWLEDGE_TTL_SECONDS:-120}
+      REDIS_MEMORY_TTL_SECONDS: ${REDIS_MEMORY_TTL_SECONDS:-300}
+      GITLAB_BASE_URL: ${GITLAB_BASE_URL:-}
+      GITLAB_ACCESS_TOKEN: ${GITLAB_ACCESS_TOKEN:-}
+      GITLAB_REQUEST_TIMEOUT_SECONDS: ${GITLAB_REQUEST_TIMEOUT_SECONDS:-10}
       MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-2097152}
       LANGGRAPH_STRICT_MSGPACK: "true"
       KNOWLEDGE_MCP_URL: ${KNOWLEDGE_MCP_URL:-}

@@ -125,8 +125,8 @@ def build_report_subgraph(
         events = spec.events
         if not events:
             employee_id = runtime.context.employee_id or runtime.context.operator_id
-            git_activity, tasks = await asyncio.gather(
-                dependencies.git_connector.list_activity(
+            gitlab_activity, tasks = await asyncio.gather(
+                dependencies.gitlab_connector.list_activity(
                     employee_id=employee_id,
                     date_from=spec.report_date,
                     date_to=spec.report_date,
@@ -139,14 +139,14 @@ def build_report_subgraph(
             )
             events = [
                 WorkEvent(
-                    event_id=f"git:{item.get('id', index)}",
-                    title=str(item.get("title", "Git 活动")),
+                    event_id=f"gitlab:{item.get('id', index)}",
+                    title=str(item.get("title", "GitLab 活动")),
                     status="completed",
-                    source_type=SourceType.GIT,
+                    source_type=SourceType.GITLAB,
                     source_id=str(item.get("id", index)),
-                    evidence_url=f"connector://git/{item.get('id', index)}",
+                    evidence_url=f"connector://gitlab/{item.get('id', index)}",
                 )
-                for index, item in enumerate(git_activity)
+                for index, item in enumerate(gitlab_activity)
             ]
             events.extend(
                 WorkEvent(

@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     task_worker_retry_delay_seconds: int = 10
     log_level: str = "INFO"
     database_url: str | None = None
+    redis_url: str | None = None
+    redis_key_prefix: str = "office-multi-agent"
+    redis_default_ttl_seconds: int = 120
+    redis_knowledge_ttl_seconds: int = 120
+    redis_memory_ttl_seconds: int = 300
+    gitlab_base_url: str | None = None
+    gitlab_access_token: str | None = None
+    gitlab_request_timeout_seconds: float = 10
     knowledge_mcp_url: str | None = None
     knowledge_mcp_service_token: str | None = None
     max_request_body_bytes: int = 2 * 1024 * 1024

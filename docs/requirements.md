@@ -70,6 +70,8 @@ Multi-Agent 办公助手。主 Agent 负责理解目标、拆解任务、委派�
 
 - 开发环境允许使用内存 Checkpointer 和 Store；
 - 数据库环境使用 PostgreSQL 保存业务记录、Agent Checkpoint 和 Store；
+- Redis 仅缓存可重建的热点读数据，缓存键必须按租户、用户和权限范围隔离；
+- 缓存不可用时必须回源，审批、提交、审计、Checkpoint 和任务状态不得以缓存为事实源；
 - HITL 中断后必须可以使用同一个 `thread_id` 恢复；
 - 审核记录只能消费一次；
 - 进程重启或请求重放不能导致重复提交、重复发送；
@@ -91,5 +93,6 @@ Multi-Agent 办公助手。主 Agent 负责理解目标、拆解任务、委派�
 - 长对话和大工具结果不会完整堆积在主 Agent 消息中；
 - 确认记忆在不同线程可恢复且不同租户不可见；
 - PostgreSQL 模式下中断后重启可以恢复；
+- GitLab 活动、知识问答和确认记忆的重复读取能够命中缓存且不发生跨租户/权限泄漏；
 - Mock 与真实 Connector 边界明确；
 - `pytest`、`ruff check .` 和 `mypy app` 通过。

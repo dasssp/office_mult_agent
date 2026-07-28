@@ -21,7 +21,10 @@ from app.agents.report_agent import ReportAgent
 from app.agents.supervisor import build_supervisor_graph
 from app.api.routes import router
 from app.config import get_settings
+from app.connectors.base import KnowledgeConnector
+from app.connectors.cached import CachedKnowledgeConnector
 from app.connectors.mcp_knowledge import McpKnowledgeConnector
+from app.connectors.mocks.knowledge import MockKnowledgeConnector
 from app.connectors.registry import ConnectorRegistry
 from app.database import Database
 from app.middleware.runtime import RuntimeSecurityMiddleware
@@ -41,6 +44,7 @@ from app.repositories.runtime import (
 from app.services.approvals import ApprovalService
 from app.services.artifacts import ArtifactService
 from app.services.audit import AuditService
+from app.services.cache import RedisJsonCache
 from app.services.files import FileService
 from app.services.idempotency import IdempotencyService
 from app.services.permissions import PermissionService
@@ -58,6 +62,12 @@ os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 async def lifespan(app: FastAPI):
     if settings.app_env == "production" and not settings.database_url:
         raise RuntimeError("DATABASE_URL is required in production")
+    if settings.app_env == "production" and not settings.redis_url:
+        raise RuntimeError("REDIS_URL is required in production")
+    if settings.app_env == "production" and not settings.gitlab_base_url:
+        raise RuntimeError("GITLAB_BASE_URL is required in production")
+    if settings.app_env == "production" and not settings.gitlab_access_token:
+        raise RuntimeError("GITLAB_ACCESS_TOKEN is required in production")
     if settings.app_env == "production" and not settings.knowledge_mcp_url:
         raise RuntimeError("KNOWLEDGE_MCP_URL is required in production")
     if settings.app_env == "production" and not settings.knowledge_mcp_service_token:
@@ -65,18 +75,34 @@ async def lifespan(app: FastAPI):
     if settings.assistant_runtime == "deep_agent" and not settings.agent_model:
         raise RuntimeError("AGENT_MODEL is required when ASSISTANT_RUNTIME=deep_agent")
     database = Database(settings.database_url) if settings.database_url else None
-    knowledge_agent = (
-        KnowledgeAgent(
-            McpKnowledgeConnector(
-                settings.knowledge_mcp_url,
-                service_token=settings.knowledge_mcp_service_token,
-            )
+    cache = RedisJsonCache(settings.redis_url) if settings.redis_url else None
+    knowledge_connector: KnowledgeConnector = (
+        McpKnowledgeConnector(
+            settings.knowledge_mcp_url,
+            service_token=settings.knowledge_mcp_service_token,
         )
         if settings.knowledge_mcp_url
-        else KnowledgeAgent()
+        else MockKnowledgeConnector()
     )
+    if cache is not None:
+        knowledge_connector = CachedKnowledgeConnector(
+            knowledge_connector,
+            cache,
+            key_prefix=settings.redis_key_prefix,
+            ttl_seconds=settings.redis_knowledge_ttl_seconds,
+        )
+    knowledge_agent = KnowledgeAgent(knowledge_connector)
     app.state.knowledge_agent = knowledge_agent
-    app.state.connectors = ConnectorRegistry.for_environment(settings.app_env)
+    app.state.cache = cache
+    app.state.connectors = ConnectorRegistry.for_environment(
+        settings.app_env,
+        gitlab_base_url=settings.gitlab_base_url,
+        gitlab_access_token=settings.gitlab_access_token,
+        gitlab_request_timeout_seconds=settings.gitlab_request_timeout_seconds,
+        cache=cache,
+        cache_key_prefix=settings.redis_key_prefix,
+        cache_ttl_seconds=settings.redis_default_ttl_seconds,
+    )
     checkpointer_context = None
     store_context = None
     store: BaseStore | None = None
@@ -87,7 +113,12 @@ async def lifespan(app: FastAPI):
             SqlAlchemyIdempotencyRepository(database.session_factory)
         )
         runtime_repository = SqlAlchemyRuntimeStateRepository(database.session_factory)
-        app.state.memory = MemoryService(runtime_repository)
+        app.state.memory = MemoryService(
+            runtime_repository,
+            cache=cache,
+            cache_key_prefix=settings.redis_key_prefix,
+            cache_ttl_seconds=settings.redis_memory_ttl_seconds,
+        )
         app.state.background_tasks = BackgroundTaskService(runtime_repository)
         app.state.schedules = ScheduleService(runtime_repository)
         app.state.files = FileService(
@@ -121,7 +152,11 @@ async def lifespan(app: FastAPI):
     else:
         checkpointer = InMemorySaver()
         store = InMemoryStore()
-        app.state.memory = MemoryService()
+        app.state.memory = MemoryService(
+            cache=cache,
+            cache_key_prefix=settings.redis_key_prefix,
+            cache_ttl_seconds=settings.redis_memory_ttl_seconds,
+        )
         app.state.background_tasks = BackgroundTaskService()
         app.state.schedules = ScheduleService()
         app.state.files = FileService()
@@ -143,7 +178,7 @@ async def lifespan(app: FastAPI):
             email_connector=app.state.connectors.email,
             meeting_connector=app.state.connectors.meeting_im,
             asr=app.state.connectors.asr,
-            git_connector=app.state.connectors.git,
+            gitlab_connector=app.state.connectors.gitlab,
             task_connector=app.state.connectors.task,
             permissions=PermissionService(),
             audit=app.state.audit,
@@ -177,6 +212,9 @@ async def lifespan(app: FastAPI):
             await store_context.__aexit__(None, None, None)
         if checkpointer_context is not None:
             await checkpointer_context.__aexit__(None, None, None)
+        await app.state.connectors.aclose()
+        if cache is not None:
+            await cache.aclose()
         if database is not None:
             await database.dispose()
 

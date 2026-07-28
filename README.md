@@ -16,6 +16,8 @@
   Checkpointer 支持进程重启后的恢复。
 - 会议录音转写进入 PostgreSQL 持久化队列，由独立异步 Worker 执行，支持并发抢占、
   超时、重试、取消、崩溃租约回收和结果恢复。
+- Redis 对 GitLab 活动、带引用的知识问答和已确认长期记忆提供租户/权限隔离的短时缓存；
+  缓存故障时自动回源，不影响核心流程。
 - 外部写操作统一经过权限、人工审核、幂等、敏感信息检查和审计。
 
 ## 本地开发
@@ -53,6 +55,7 @@ Invoke-RestMethod http://localhost:8000/ready
 Compose 会启动：
 
 - `postgres`：业务数据、LangGraph 检查点和长期存储；
+- `redis`：只保存可重建的热点读数据，不承担事实数据持久化；
 - `app`：执行 Alembic 迁移后启动 FastAPI；
 - `worker`：独立消费持久化异步任务。
 
@@ -113,6 +116,36 @@ KNOWLEDGE_MCP_SERVICE_TOKEN=由密钥系统注入
 主应用只调用 MCP 工具，不在 Python 项目中重复实现 RAG。生产模式缺少 MCP 地址或服务
 令牌时会拒绝启动。
 
+## Redis 缓存
+
+```env
+REDIS_URL=redis://localhost:6379/0
+REDIS_DEFAULT_TTL_SECONDS=120
+REDIS_KNOWLEDGE_TTL_SECONDS=120
+REDIS_MEMORY_TTL_SECONDS=300
+```
+
+当前采用 Cache-Aside：
+
+- GitLab 活动查询：按租户、员工和日期范围缓存；
+- Java RAG MCP 成功响应：仅缓存带引用的结果，并纳入用户、角色和权限范围；
+- 已确认长期记忆：读取时缓存，新增或更新后立即失效。
+
+审批、提交、审计、LangGraph Checkpoint 和异步任务状态不缓存，继续以 PostgreSQL 为
+事实来源。Redis 键只暴露命名空间和摘要，不直接包含租户、用户、查询正文等敏感值。
+
+## GitLab 接入
+
+```env
+GITLAB_BASE_URL=https://gitlab.example.com
+GITLAB_ACCESS_TOKEN=由密钥系统注入
+GITLAB_REQUEST_TIMEOUT_SECONDS=10
+```
+
+日报采集通过 GitLab Events API 读取用户活动。生产模式缺少 GitLab 地址或访问令牌时
+拒绝启动；令牌不会写入日志或缓存。仓库 CI 已迁移为根目录 `.gitlab-ci.yml`，包含
+单元/静态检查、Redis 集成测试、PostgreSQL 恢复测试和镜像构建。
+
 ## 质量检查
 
 ```powershell
@@ -128,12 +161,19 @@ docker compose config --quiet
 pytest tests/integration/test_postgres_deep_recovery.py -q
 ```
 
-CI 包含 PostgreSQL 16 服务，会执行迁移并验证 HITL 跨进程恢复。
+设置 `TEST_REDIS_URL` 后可运行 Redis 集成测试：
+
+```powershell
+pytest tests/integration/test_redis_cache.py -q
+```
+
+GitLab CI 包含 Redis 7 和 PostgreSQL 16 服务，会验证缓存读写、数据库迁移以及 HITL
+跨进程恢复。
 
 ## 生产接入边界
 
 仓库提供 Connector Protocol、Mock 和显式不可用实现，但不会伪装为已经接通真实企业系统。
-上线前仍需接入真实报工、邮件、IM、ASR、Git、任务和目录 Connector，并配置认证网关、
+上线前仍需接入真实报工、邮件、IM、ASR、任务和目录 Connector，并配置认证网关、
 对象存储、病毒扫描、DLP、TLS、备份恢复、指标追踪和告警。
 
 详细改造说明见 [Deep Agent 改造说明](docs/DEEP_AGENT_MIGRATION.md)。

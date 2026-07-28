@@ -13,7 +13,7 @@ from app.agents.report_agent import ReportAgent
 from app.connectors.base import (
     ASRService,
     EmailConnector,
-    GitConnector,
+    GitLabConnector,
     MeetingIMConnector,
     ReportSystemConnector,
     TaskConnector,
@@ -38,7 +38,7 @@ class DeepAgentDependencies:
     email_connector: EmailConnector
     meeting_connector: MeetingIMConnector
     asr: ASRService
-    git_connector: GitConnector
+    gitlab_connector: GitLabConnector
     task_connector: TaskConnector
     permissions: PermissionService
     audit: AuditService
@@ -80,8 +80,8 @@ def build_report_tools(deps: DeepAgentDependencies) -> list[BaseTool]:
     ) -> list[dict[str, Any]]:
         """并行查询当前员工的 Git 和任务活动并转换为可追溯工作事件。"""
         employee_id = runtime.context.employee_id or runtime.context.operator_id
-        git_activity, tasks = await asyncio.gather(
-            deps.git_connector.list_activity(
+        gitlab_activity, tasks = await asyncio.gather(
+            deps.gitlab_connector.list_activity(
                 employee_id=employee_id,
                 date_from=date_from,
                 date_to=date_to,
@@ -94,14 +94,14 @@ def build_report_tools(deps: DeepAgentDependencies) -> list[BaseTool]:
         )
         events = [
             WorkEvent(
-                event_id=f"git:{item.get('id', index)}",
-                title=str(item.get("title", "Git 活动")),
+                event_id=f"gitlab:{item.get('id', index)}",
+                title=str(item.get("title", "GitLab 活动")),
                 status="completed",
-                source_type=SourceType.GIT,
+                source_type=SourceType.GITLAB,
                 source_id=str(item.get("id", index)),
-                evidence_url=f"connector://git/{item.get('id', index)}",
+                evidence_url=f"connector://gitlab/{item.get('id', index)}",
             )
-            for index, item in enumerate(git_activity)
+            for index, item in enumerate(gitlab_activity)
         ]
         events.extend(
             WorkEvent(

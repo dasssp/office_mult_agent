@@ -16,7 +16,7 @@ from app.agents.report_agent import ReportAgent
 from app.connectors.mocks.email import MockEmailConnector
 from app.connectors.mocks.enterprise import (
     MockASRService,
-    MockGitConnector,
+    MockGitLabConnector,
     MockMeetingIMConnector,
     MockTaskConnector,
 )
@@ -105,7 +105,7 @@ def _dependencies(tmp_path) -> DeepAgentDependencies:
         email_connector=MockEmailConnector(),
         meeting_connector=MockMeetingIMConnector(),
         asr=MockASRService(),
-        git_connector=MockGitConnector(),
+        gitlab_connector=MockGitLabConnector(),
         task_connector=MockTaskConnector(),
         permissions=PermissionService(),
         audit=AuditService(),

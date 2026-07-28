@@ -10,6 +10,7 @@ class SourceType(StrEnum):
     IM = "im"
     EMAIL = "email"
     GIT = "git"
+    GITLAB = "gitlab"
     TASK = "task"
     MEETING = "meeting"
     MANUAL = "manual"

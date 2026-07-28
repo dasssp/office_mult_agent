@@ -5,6 +5,7 @@ from typing import Literal, Protocol
 from uuid import uuid4
 
 from app.schemas import RequestContext
+from app.services.cache import JsonCache, scoped_cache_key
 
 
 @dataclass(frozen=True)
@@ -193,8 +194,26 @@ class InMemoryRuntimeStateRepository:
 
 
 class MemoryService:
-    def __init__(self, repository: RuntimeStateRepository | None = None) -> None:
+    def __init__(
+        self,
+        repository: RuntimeStateRepository | None = None,
+        *,
+        cache: JsonCache | None = None,
+        cache_key_prefix: str = "office-multi-agent",
+        cache_ttl_seconds: int = 300,
+    ) -> None:
         self._repository = repository or InMemoryRuntimeStateRepository()
+        self._cache = cache
+        self._cache_key_prefix = cache_key_prefix
+        self._cache_ttl_seconds = cache_ttl_seconds
+
+    def _cache_key(self, context: RequestContext) -> str:
+        return scoped_cache_key(
+            prefix=self._cache_key_prefix,
+            namespace="confirmed-memory",
+            tenant_id=context.tenant_id,
+            parts=(context.operator_id,),
+        )
 
     async def remember(
         self, *, key: str, value: str, confirmed: bool, context: RequestContext
@@ -209,10 +228,50 @@ class MemoryService:
             value=value,
             confirmed_at=datetime.now().astimezone(),
         )
-        return await self._repository.save_memory(item, context)
+        saved = await self._repository.save_memory(item, context)
+        if self._cache is not None:
+            await self._cache.delete(self._cache_key(context))
+        return saved
 
     async def list_for(self, context: RequestContext) -> list[ConfirmedMemory]:
-        return await self._repository.list_memories(context)
+        cache_key = self._cache_key(context)
+        if self._cache is not None:
+            cached = await self._cache.get(cache_key)
+            if isinstance(cached, list):
+                try:
+                    if not all(isinstance(item, dict) for item in cached):
+                        raise ValueError("invalid cached memory list")
+                    return [
+                        ConfirmedMemory(
+                            memory_id=str(item["memory_id"]),
+                            tenant_id=context.tenant_id,
+                            operator_id=context.operator_id,
+                            key=str(item["key"]),
+                            value=str(item["value"]),
+                            confirmed_at=datetime.fromisoformat(
+                                str(item["confirmed_at"])
+                            ),
+                        )
+                        for item in cached
+                    ]
+                except (KeyError, TypeError, ValueError):
+                    await self._cache.delete(cache_key)
+        memories = await self._repository.list_memories(context)
+        if self._cache is not None:
+            await self._cache.set(
+                cache_key,
+                [
+                    {
+                        "memory_id": item.memory_id,
+                        "key": item.key,
+                        "value": item.value,
+                        "confirmed_at": item.confirmed_at.isoformat(),
+                    }
+                    for item in memories
+                ],
+                ttl_seconds=self._cache_ttl_seconds,
+            )
+        return memories
 
 
 class BackgroundTaskService:

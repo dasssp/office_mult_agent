@@ -47,7 +47,7 @@ class MockASRService:
         }
 
 
-class MockGitConnector:
+class MockGitLabConnector:
     async def list_activity(
         self,
         *,
@@ -56,7 +56,14 @@ class MockGitConnector:
         date_to: str,
         context: RequestContext,
     ) -> list[dict]:
-        return [{"type": "merge_request", "id": "mr-1", "title": "完成接口实现"}]
+        return [
+            {
+                "type": "merge_request",
+                "id": "mr-1",
+                "title": "完成 GitLab 合并请求",
+                "project_id": "project-demo",
+            }
+        ]
 
 
 class MockTaskConnector:
