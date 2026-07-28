@@ -19,11 +19,13 @@ def build_subagent_tools():
         return DataAnalysisAgent().analyze(rows=rows).model_dump()
 
     @tool
-    def meeting_minutes_tool(meeting_id: str, title: str, segments: list[dict[str, object]]) -> dict:
+    async def meeting_minutes_tool(meeting_id: str, title: str, segments: list[dict[str, object]]) -> dict:
         """Create a meeting-minutes draft from supplied transcript segments."""
         from app.schemas.workflows import TranscriptSegment
 
         parsed = [TranscriptSegment.model_validate(item) for item in segments]
-        return MeetingMinutesAgent().generate(meeting_id=meeting_id, title=title, segments=parsed).model_dump()
+        # The supervisor tool creates drafts only; review/send remains in the API workflow.
+        draft = await MeetingMinutesAgent().generate(meeting_id=meeting_id, title=title, segments=parsed)
+        return draft.model_dump()
 
     return [email_polish_tool, data_analysis_tool, meeting_minutes_tool]

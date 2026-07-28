@@ -5,6 +5,7 @@ from app.agents.email_polish_agent import EmailPolishAgent
 from app.agents.meeting_minutes_agent import MeetingMinutesAgent
 from app.agents.report_agent import ReportAgent
 from app.agents.supervisor import build_supervisor_graph
+from app.connectors.mocks.email import MockEmailConnector
 from app.connectors.mocks.report_system import MockReportSystemConnector
 from app.middleware.context import build_development_context
 from app.schemas import AssistantInvokeRequest, AssistantInvokeResponse
@@ -13,8 +14,10 @@ from app.schemas.workflows import (
     DataAnalysisResult,
     EmailPolishDraft,
     EmailPolishRequest,
+    MeetingEmailStatus,
     MeetingMinutesDraft,
     MeetingMinutesRequest,
+    MeetingReviewRequest,
     ReportDraft,
     ReportGenerateRequest,
     ReportReviewRequest,
@@ -29,6 +32,8 @@ _report_agent = ReportAgent()
 _report_connector = MockReportSystemConnector()
 _permissions = PermissionService()
 _audit = AuditService()
+_meeting_agent = MeetingMinutesAgent()
+_email_connector = MockEmailConnector()
 
 
 @router.get("/health")
@@ -82,7 +87,28 @@ async def submit_report(report_id: str, request: Request) -> ReportSubmission:
 
 @router.post("/meetings/{meeting_id}/minutes", response_model=MeetingMinutesDraft)
 async def generate_minutes(meeting_id: str, payload: MeetingMinutesRequest) -> MeetingMinutesDraft:
-    return MeetingMinutesAgent().generate(meeting_id=meeting_id, title=payload.title, segments=payload.segments)
+    return await _meeting_agent.generate(meeting_id=meeting_id, title=payload.title, segments=payload.segments)
+
+
+@router.post("/meetings/{meeting_id}/reviews", response_model=MeetingMinutesDraft)
+async def review_minutes(meeting_id: str, payload: MeetingReviewRequest) -> MeetingMinutesDraft:
+    try:
+        return await _meeting_agent.review(meeting_id=meeting_id, approved=payload.approved, comment=payload.comment)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="meeting minutes not found") from error
+
+
+@router.post("/meetings/{meeting_id}/send", response_model=MeetingEmailStatus)
+async def send_minutes(meeting_id: str, request: Request) -> MeetingEmailStatus:
+    context = build_development_context(request, thread_id=f"meeting:{meeting_id}")
+    try:
+        return await _meeting_agent.send(meeting_id=meeting_id, context=context, connector=_email_connector, permissions=_permissions, audit=_audit)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="meeting minutes not found") from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/emails/polish", response_model=EmailPolishDraft)

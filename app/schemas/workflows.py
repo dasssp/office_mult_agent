@@ -57,7 +57,19 @@ class MeetingMinutesDraft(BaseModel):
     summary: str
     evidence_segment_ids: list[str]
     warnings: list[str]
-    status: Literal["draft"]
+    status: Literal["draft", "approved", "rejected", "sent"]
+    review_comment: str | None = None
+
+
+class MeetingReviewRequest(BaseModel):
+    approved: bool
+    comment: str | None = Field(default=None, max_length=1000)
+
+
+class MeetingEmailStatus(BaseModel):
+    meeting_id: str
+    message_id: str
+    status: Literal["sent"]
 
 
 class EmailPolishRequest(BaseModel):
