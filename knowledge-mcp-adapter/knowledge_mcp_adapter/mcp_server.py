@@ -44,13 +44,13 @@ def _identity(ctx: Context) -> TrustedIdentity:
 
 @mcp.tool()
 async def knowledge_answer_tool(query: str, ctx: Context) -> dict[str, Any]:
-    """Answer with Java RAG and citations. Identity is injected by trusted infrastructure."""
+    """通过 Java RAG 回答问题并返回引用。身份由可信基础设施注入。"""
     return await knowledge_answer(query, _identity(ctx), _client)
 
 
 @mcp.tool()
 async def knowledge_search_tool(query: str, ctx: Context) -> dict[str, Any]:
-    """Search the Java RAG index without exposing identity as an LLM parameter."""
+    """检索 Java RAG 索引，不将身份暴露为 LLM 可填写的参数。"""
     return await knowledge_search(query, _identity(ctx), _client)
 
 
@@ -58,7 +58,7 @@ async def knowledge_search_tool(query: str, ctx: Context) -> dict[str, Any]:
 async def knowledge_document_chunk_tool(
     document_id: str, chunk_id: str, ctx: Context
 ) -> dict[str, Any]:
-    """Fetch one cited document chunk from Java RAG."""
+    """从 Java RAG 获取一个被引用的文档片段。"""
     return await knowledge_document_chunk(document_id, chunk_id, _identity(ctx), _client)
 
 
@@ -66,7 +66,7 @@ async def knowledge_document_chunk_tool(
 async def knowledge_document_metadata_tool(
     document_id: str, ctx: Context
 ) -> dict[str, Any]:
-    """Fetch metadata for one cited document from Java RAG."""
+    """从 Java RAG 获取一个被引用文档的元数据。"""
     return await knowledge_document_metadata(document_id, _identity(ctx), _client)
 
 

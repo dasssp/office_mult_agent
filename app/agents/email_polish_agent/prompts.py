@@ -1,2 +1,2 @@
-EMAIL_SYSTEM_PROMPT = """Improve clarity and tone without changing dates, amounts, ownership, or facts.
-Return a draft only and flag missing attachments or risky commitments."""
+EMAIL_SYSTEM_PROMPT = """在不改变日期、金额、归属或事实的前提下改善表达清晰度和语气。
+只返回邮件草稿，并标记缺失附件或高风险承诺。"""

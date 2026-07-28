@@ -8,27 +8,27 @@ from app.schemas import RequestContext
 
 
 def build_subagent_tools(context: RequestContext | None = None):
-    """Expose narrow, validated subagent operations to the Supervisor only."""
+    """仅向 Supervisor 暴露范围受限且经过校验的子 Agent 操作。"""
 
     @tool
     def email_polish_tool(subject: str, body: str) -> dict:
-        """Produce an email draft. It never sends email."""
+        """生成邮件草稿，不会发送邮件。"""
         return EmailPolishAgent().polish(subject=subject, body=body, attachments=[]).model_dump()
 
     @tool
     def data_analysis_tool(rows: list[dict[str, object]]) -> dict:
-        """Compute deterministic tabular-data quality statistics."""
+        """计算确定性的表格数据质量统计信息。"""
         return DataAnalysisAgent().analyze(rows=rows).model_dump()
 
     @tool
     async def meeting_minutes_tool(meeting_id: str, title: str, segments: list[dict[str, object]]) -> dict:
-        """Create a meeting-minutes draft from supplied transcript segments."""
+        """根据提供的转写片段生成会议纪要草稿。"""
         from app.schemas.workflows import TranscriptSegment
 
         if context is None:
             raise ValueError("trusted request context is required")
         parsed = [TranscriptSegment.model_validate(item) for item in segments]
-        # The supervisor tool creates drafts only; review/send remains in the API workflow.
+        # Supervisor 工具只生成草稿；审核和发送仍由 API 工作流负责。
         draft = await MeetingMinutesAgent().generate(
             meeting_id=meeting_id,
             title=title,
@@ -43,7 +43,7 @@ def build_subagent_tools(context: RequestContext | None = None):
         events: list[dict[str, object]],
         report_type: str = "daily",
     ) -> dict:
-        """Create an evidence-backed report draft. It never submits a report."""
+        """生成有证据支撑的报告草稿，不会提交报告。"""
         from app.schemas.workflows import WorkEvent
 
         parsed = [WorkEvent.model_validate(item) for item in events]
