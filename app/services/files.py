@@ -1,10 +1,13 @@
+import asyncio
 import csv
+import hashlib
 import io
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import ClassVar
 from uuid import uuid4
 
 
@@ -12,34 +15,114 @@ class UnsafeFileError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class FileMetadata:
+    file_id: str
+    filename: str
+    content_type: str | None
+    byte_size: int
+    sha256: str
+    row_count: int
+    file_type: str
+    storage_ref: str
+    status: str = "stored"
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 @dataclass
 class FileService:
     files: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    metadata: dict[str, FileMetadata] = field(default_factory=dict)
+    storage_dir: Path = field(default_factory=lambda: Path("uploads"))
     max_bytes: int = 2 * 1024 * 1024
+    max_rows: int = 10_000
 
-    async def store_and_parse(self, *, filename: str, content: bytes) -> str:
-        if len(content) > self.max_bytes:
-            raise UnsafeFileError("file exceeds maximum size")
-        suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        if suffix not in {"csv", "json", "xlsx", "docx", "pdf"}:
-            raise UnsafeFileError("unsupported file type")
-        if suffix == "xlsx":
-            rows = self._parse_xlsx(content)
-        elif suffix == "docx":
-            rows = [{"text": self._parse_docx(content)}]
-        elif suffix == "pdf":
-            rows = [{"text": self._parse_pdf(content)}]
-        else:
-            text = content.decode("utf-8-sig")
-            rows = self._parse_csv(text) if suffix == "csv" else self._parse_json(text)
+    _allowed_types: ClassVar[set[str]] = {"csv", "json", "xlsx", "docx", "pdf"}
+    _content_types: ClassVar[dict[str, set[str]]] = {
+        "csv": {"text/csv", "application/csv"},
+        "json": {"application/json", "text/json"},
+        "xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+        "pdf": {"application/pdf"},
+    }
+
+    async def store_and_parse(
+        self, *, filename: str, content: bytes, content_type: str | None = None
+    ) -> str:
+        suffix = self._validate_upload(filename, content, content_type)
+        rows = self._parse(suffix, content)
+        self._validate_row_count(rows)
         file_id = str(uuid4())
+        storage_path = self.storage_dir / f"{file_id}.{suffix}"
+        await asyncio.to_thread(self.storage_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(storage_path.write_bytes, content)
         self.files[file_id] = rows
+        self.metadata[file_id] = FileMetadata(
+            file_id=file_id,
+            filename=filename,
+            content_type=content_type,
+            byte_size=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            row_count=len(rows),
+            file_type=suffix,
+            storage_ref=str(storage_path),
+        )
         return file_id
 
     async def get_rows(self, file_id: str) -> list[dict[str, object]]:
         if file_id not in self.files:
             raise KeyError(file_id)
         return self.files[file_id]
+
+    async def get_metadata(self, file_id: str) -> FileMetadata:
+        if file_id not in self.metadata:
+            raise KeyError(file_id)
+        return self.metadata[file_id]
+
+    async def delete(self, file_id: str) -> None:
+        metadata = await self.get_metadata(file_id)
+        path = Path(metadata.storage_ref)
+        if path.parent.resolve() != self.storage_dir.resolve():
+            raise UnsafeFileError("invalid storage reference")
+        await asyncio.to_thread(path.unlink, missing_ok=True)
+        self.files.pop(file_id, None)
+        self.metadata.pop(file_id, None)
+
+    def _validate_upload(self, filename: str, content: bytes, content_type: str | None) -> str:
+        if not filename or Path(filename).name != filename or len(filename) > 255:
+            raise UnsafeFileError("invalid filename")
+        if any(ord(char) < 32 for char in filename):
+            raise UnsafeFileError("invalid filename")
+        if not content:
+            raise UnsafeFileError("file is empty")
+        if len(content) > self.max_bytes:
+            raise UnsafeFileError("file exceeds maximum size")
+        suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if suffix not in self._allowed_types:
+            raise UnsafeFileError("unsupported file type")
+        if content_type and content_type not in self._content_types[suffix]:
+            raise UnsafeFileError("content type does not match filename")
+        if suffix == "pdf" and not content.startswith(b"%PDF-"):
+            raise UnsafeFileError("invalid PDF signature")
+        if suffix in {"xlsx", "docx"} and not content.startswith(b"PK"):
+            raise UnsafeFileError("invalid Office document signature")
+        return suffix
+
+    def _parse(self, suffix: str, content: bytes) -> list[dict[str, object]]:
+        if suffix == "xlsx":
+            return self._parse_xlsx(content)
+        if suffix == "docx":
+            return [{"text": self._parse_docx(content)}]
+        if suffix == "pdf":
+            return [{"text": self._parse_pdf(content)}]
+        text = content.decode("utf-8-sig")
+        return self._parse_csv(text) if suffix == "csv" else self._parse_json(text)
+
+    def _validate_row_count(self, rows: list[dict[str, object]]) -> None:
+        if len(rows) > self.max_rows:
+            raise UnsafeFileError("file exceeds maximum row count")
 
     def _parse_csv(self, text: str) -> list[dict[str, object]]:
         rows = list(csv.DictReader(io.StringIO(text)))
@@ -62,16 +145,14 @@ class FileService:
             path = Path(handle.name)
         try:
             workbook = load_workbook(path, read_only=True, data_only=True, keep_vba=False)
-            sheet = workbook.active
-            values = list(sheet.iter_rows(values_only=True))
+            values = list(workbook.active.iter_rows(values_only=True))
+            workbook.close()
             if not values:
                 return []
             headers = [str(value) if value is not None else "" for value in values[0]]
             if not all(headers) or len(set(headers)) != len(headers):
                 raise UnsafeFileError("XLSX headers must be present and unique")
-            result = [dict(zip(headers, row, strict=True)) for row in values[1:]]
-            workbook.close()
-            return result
+            return [dict(zip(headers, row, strict=True)) for row in values[1:]]
         finally:
             path.unlink(missing_ok=True)
 

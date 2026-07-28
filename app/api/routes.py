@@ -242,7 +242,7 @@ async def export_uploaded_analysis(file_id: str) -> dict[str, str]:
 @router.get("/files/{file_id}/metadata")
 async def file_metadata(file_id: str) -> dict[str, object]:
     try:
-        return {"file_id": file_id, "row_count": len(await _files.get_rows(file_id)), "status": "stored"}
+        return (await _files.get_metadata(file_id)).as_dict()
     except KeyError as error:
         raise HTTPException(status_code=404, detail="file not found") from error
 
@@ -250,7 +250,23 @@ async def file_metadata(file_id: str) -> dict[str, object]:
 @router.post("/files/upload")
 async def upload_file(file: UploadFile = File(...)) -> dict[str, str]:
     try:
-        file_id = await _files.store_and_parse(filename=file.filename or "", content=await file.read())
+        file_id = await _files.store_and_parse(
+            filename=file.filename or "", content=await file.read(), content_type=file.content_type
+        )
         return {"file_id": file_id, "status": "stored"}
     except (UnicodeDecodeError, UnsafeFileError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.delete("/files/{file_id}")
+async def delete_file(file_id: str, request: Request) -> dict[str, str]:
+    context = build_development_context(request, thread_id=f"file:{file_id}")
+    try:
+        _permissions.require(context, "file:delete")
+        await _files.delete(file_id)
+        await _audit_for(request).record(action="file.delete", context=context, target_id=file_id)
+        return {"file_id": file_id, "status": "deleted"}
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="file not found") from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
