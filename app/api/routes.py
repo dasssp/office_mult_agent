@@ -129,6 +129,22 @@ async def analyze_data(payload: DataAnalysisRequest) -> DataAnalysisResult:
     return DataAnalysisAgent().analyze(rows=payload.rows)
 
 
+@router.post("/analysis/files/{file_id}", response_model=DataAnalysisResult)
+async def analyze_uploaded_file(file_id: str) -> DataAnalysisResult:
+    try:
+        return DataAnalysisAgent().analyze(rows=await _files.get_rows(file_id))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="file not found") from error
+
+
+@router.get("/files/{file_id}/metadata")
+async def file_metadata(file_id: str) -> dict[str, object]:
+    try:
+        return {"file_id": file_id, "row_count": len(await _files.get_rows(file_id)), "status": "stored"}
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="file not found") from error
+
+
 @router.post("/files/upload")
 async def upload_file(file: UploadFile = File(...)) -> dict[str, str]:
     try:
