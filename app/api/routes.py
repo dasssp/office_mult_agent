@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from app.agents.data_analysis_agent import DataAnalysisAgent
 from app.agents.email_polish_agent import EmailPolishAgent
@@ -24,6 +24,7 @@ from app.schemas.workflows import (
     ReportSubmission,
 )
 from app.services.audit import AuditService
+from app.services.files import FileService, UnsafeFileError
 from app.services.permissions import PermissionService
 
 router = APIRouter()
@@ -34,6 +35,7 @@ _permissions = PermissionService()
 _audit = AuditService()
 _meeting_agent = MeetingMinutesAgent()
 _email_connector = MockEmailConnector()
+_files = FileService()
 
 
 @router.get("/health")
@@ -125,3 +127,12 @@ async def polish_email(payload: EmailPolishRequest) -> EmailPolishDraft:
 @router.post("/analysis/run", response_model=DataAnalysisResult)
 async def analyze_data(payload: DataAnalysisRequest) -> DataAnalysisResult:
     return DataAnalysisAgent().analyze(rows=payload.rows)
+
+
+@router.post("/files/upload")
+async def upload_file(file: UploadFile = File(...)) -> dict[str, str]:
+    try:
+        file_id = await _files.store_and_parse(filename=file.filename or "", content=await file.read())
+        return {"file_id": file_id, "status": "stored"}
+    except (UnicodeDecodeError, UnsafeFileError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
