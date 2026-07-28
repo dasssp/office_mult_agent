@@ -1,4 +1,6 @@
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from app.agents.supervisor.state import SupervisorState
 from app.schemas import Intent
@@ -71,6 +73,16 @@ async def call_report_agent(state: SupervisorState) -> SupervisorState:
     return {"subagent_result": result, "status": "completed"}
 
 
+def request_human_approval(state: SupervisorState) -> SupervisorState:
+    """Pause after a draft is prepared; this node has no external side effects."""
+    decision = interrupt({"kind": "report_approval", "draft": state.get("subagent_result", {})})
+    if not isinstance(decision, dict) or not isinstance(decision.get("approved"), bool):
+        return {"status": "approval_invalid", "warnings": ["approval decision is invalid"]}
+    if decision["approved"]:
+        return {"status": "approved", "approval_comment": str(decision.get("comment", "")) or None}
+    return {"status": "rejected", "approval_comment": str(decision.get("comment", "")) or None}
+
+
 async def analyze_then_generate_report(state: SupervisorState) -> SupervisorState:
     payload = state.get("task_input", {})
     rows, report_date = payload.get("rows"), payload.get("report_date")
@@ -97,7 +109,13 @@ def route_after_parse(state: SupervisorState) -> str:
     return "prepare_result"
 
 
-def build_supervisor_graph():
+def route_after_report(state: SupervisorState) -> str:
+    if state.get("task_input", {}).get("require_approval") is True:
+        return "request_human_approval"
+    return "prepare_result"
+
+
+def build_supervisor_graph(checkpointer: BaseCheckpointSaver | None = None):
     # Registered tools are intentionally narrow; state graph keeps orchestration deterministic.
     build_subagent_tools()
     graph = StateGraph(SupervisorState)
@@ -107,13 +125,15 @@ def build_supervisor_graph():
     graph.add_node("call_data_analysis_agent", call_data_analysis_agent)
     graph.add_node("call_meeting_minutes_agent", call_meeting_minutes_agent)
     graph.add_node("call_report_agent", call_report_agent)
+    graph.add_node("request_human_approval", request_human_approval)
     graph.add_node("analyze_then_generate_report", analyze_then_generate_report)
     graph.add_edge(START, "parse_request")
     graph.add_conditional_edges("parse_request", route_after_parse)
     graph.add_edge("call_email_polish_agent", "prepare_result")
     graph.add_edge("call_data_analysis_agent", "prepare_result")
     graph.add_edge("call_meeting_minutes_agent", "prepare_result")
-    graph.add_edge("call_report_agent", "prepare_result")
+    graph.add_conditional_edges("call_report_agent", route_after_report)
+    graph.add_edge("request_human_approval", "prepare_result")
     graph.add_edge("analyze_then_generate_report", "prepare_result")
     graph.add_edge("prepare_result", END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

@@ -19,4 +19,8 @@ alembic upgrade head
 
 The current persistence boundary stores tenant-scoped report drafts and audit events. Database schema also reserves tables for agent threads/runs, approval tasks, and file metadata; uploaded source content remains outside the database and must be stored through an authorized object-storage connector.
 
+## Human approval
+
+Send `require_approval: true` to `POST /assistant/invoke` for a report task. The workflow pauses before any external write and returns `awaiting_approval`. An operator with `report:review` resumes the same checkpoint through `POST /assistant/{thread_id}/resume` with `{"approved": true|false, "comment": "..."}`. `GET /assistant/{thread_id}/state` exposes only the pending state for the same tenant.
+
 开发环境会从请求头构造 Mock 身份；生产环境必须替换为已验证的认证提供方。

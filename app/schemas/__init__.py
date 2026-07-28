@@ -1,3 +1,17 @@
-from .assistant import AssistantInvokeRequest, AssistantInvokeResponse, Intent, RequestContext
+from .assistant import (
+    AssistantInvokeRequest,
+    AssistantInvokeResponse,
+    AssistantResumeRequest,
+    AssistantStateResponse,
+    Intent,
+    RequestContext,
+)
 
-__all__ = ["AssistantInvokeRequest", "AssistantInvokeResponse", "Intent", "RequestContext"]
+__all__ = [
+    "AssistantInvokeRequest",
+    "AssistantInvokeResponse",
+    "AssistantResumeRequest",
+    "AssistantStateResponse",
+    "Intent",
+    "RequestContext",
+]

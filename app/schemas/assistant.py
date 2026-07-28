@@ -34,6 +34,7 @@ class AssistantInvokeRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=8000)
     task_input: dict[str, object] = Field(default_factory=dict)
+    require_approval: bool = False
 
 
 class AssistantInvokeResponse(BaseModel):
@@ -43,3 +44,16 @@ class AssistantInvokeResponse(BaseModel):
     status: str
     message: str
     warnings: list[str] = Field(default_factory=list)
+    awaiting_approval: bool = False
+
+
+class AssistantResumeRequest(BaseModel):
+    approved: bool
+    comment: str | None = Field(default=None, max_length=1000)
+
+
+class AssistantStateResponse(BaseModel):
+    thread_id: str
+    status: str
+    awaiting_approval: bool
+    next_nodes: list[str] = Field(default_factory=list)
