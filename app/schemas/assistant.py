@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class Intent(StrEnum):
+    COMPOSITE_TASK = "composite_task"
     DAILY_REPORT = "daily_report"
     WEEKLY_REPORT = "weekly_report"
     MEETING_MINUTES = "meeting_minutes"

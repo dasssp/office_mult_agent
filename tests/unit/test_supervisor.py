@@ -30,4 +30,9 @@ def test_supervisor_invokes_meeting_minutes_subagent_tool() -> None:
 def test_supervisor_invokes_report_subagent_tool() -> None:
     result = asyncio.run(build_supervisor_graph().ainvoke({"message": "生成日报", "task_input": {"report_date": "2026-07-28", "events": [{"event_id": "e1", "title": "完成接口", "status": "completed"}]}}))
     assert result["subagent_result"]["completed"] == ["完成接口"]
+
+
+def test_supervisor_runs_analysis_then_report() -> None:
+    result = asyncio.run(build_supervisor_graph().ainvoke({"message": "分析数据并生成日报", "task_input": {"rows": [{"value": 1}], "report_date": "2026-07-28"}}))
+    assert result["subagent_result"]["report"]["evidence_event_ids"] == ["analysis:input"]
 import asyncio

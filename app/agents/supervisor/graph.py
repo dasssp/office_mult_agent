@@ -7,6 +7,8 @@ from app.tools import build_subagent_tools
 
 def _classify(message: str) -> Intent:
     text = message.lower()
+    if ("分析" in text or "analysis" in text) and ("日报" in text or "report" in text):
+        return Intent.COMPOSITE_TASK
     if "日报" in text or "daily report" in text:
         return Intent.DAILY_REPORT
     if "周报" in text or "weekly report" in text:
@@ -69,6 +71,18 @@ async def call_report_agent(state: SupervisorState) -> SupervisorState:
     return {"subagent_result": result, "status": "completed"}
 
 
+async def analyze_then_generate_report(state: SupervisorState) -> SupervisorState:
+    payload = state.get("task_input", {})
+    rows, report_date = payload.get("rows"), payload.get("report_date")
+    if not isinstance(rows, list) or not isinstance(report_date, str):
+        return {"status": "failed", "warnings": ["复合任务需要 rows 和 report_date。"]}
+    tools = {item.name: item for item in build_subagent_tools()}
+    analysis = tools["data_analysis_tool"].invoke({"rows": rows})
+    event = {"event_id": "analysis:input", "title": f"完成数据分析：{analysis['row_count']} 行", "status": "completed", "evidence_url": "artifact://analysis/input"}
+    report = await tools["report_draft_tool"].ainvoke({"report_date": report_date, "events": [event]})
+    return {"subagent_result": {"analysis": analysis, "report": report}, "status": "completed"}
+
+
 def route_after_parse(state: SupervisorState) -> str:
     if state["intent"] is Intent.EMAIL_POLISH:
         return "call_email_polish_agent"
@@ -78,6 +92,8 @@ def route_after_parse(state: SupervisorState) -> str:
         return "call_meeting_minutes_agent"
     if state["intent"] in {Intent.DAILY_REPORT, Intent.WEEKLY_REPORT}:
         return "call_report_agent"
+    if state["intent"] is Intent.COMPOSITE_TASK:
+        return "analyze_then_generate_report"
     return "prepare_result"
 
 
@@ -91,11 +107,13 @@ def build_supervisor_graph():
     graph.add_node("call_data_analysis_agent", call_data_analysis_agent)
     graph.add_node("call_meeting_minutes_agent", call_meeting_minutes_agent)
     graph.add_node("call_report_agent", call_report_agent)
+    graph.add_node("analyze_then_generate_report", analyze_then_generate_report)
     graph.add_edge(START, "parse_request")
     graph.add_conditional_edges("parse_request", route_after_parse)
     graph.add_edge("call_email_polish_agent", "prepare_result")
     graph.add_edge("call_data_analysis_agent", "prepare_result")
     graph.add_edge("call_meeting_minutes_agent", "prepare_result")
     graph.add_edge("call_report_agent", "prepare_result")
+    graph.add_edge("analyze_then_generate_report", "prepare_result")
     graph.add_edge("prepare_result", END)
     return graph.compile()
