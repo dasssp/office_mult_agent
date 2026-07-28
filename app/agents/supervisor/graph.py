@@ -1,7 +1,9 @@
+from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
+from pydantic import BaseModel, Field
 
 from app.agents.knowledge_agent import KnowledgeAgent
 from app.agents.supervisor.state import SupervisorState
@@ -10,8 +12,27 @@ from app.services.permissions import PermissionService
 from app.tools import build_subagent_tools
 
 
+class RouteDecision(BaseModel):
+    intent: Intent
+    plan: list[str] = Field(default_factory=list)
+
+
 def _classify(message: str) -> Intent:
     text = message.lower()
+    if ("提交" in text or "submit" in text) and (
+        "日报" in text or "周报" in text or "report" in text
+    ):
+        return Intent.REPORT_SUBMISSION
+    if ("审核" in text or "review" in text) and (
+        "会议" in text or "meeting" in text
+    ):
+        return Intent.MEETING_REVIEW
+    if "图表" in text or "chart" in text:
+        return Intent.CHART_GENERATION
+    if "导出" in text or "export" in text:
+        return Intent.REPORT_EXPORT
+    if "记忆" in text or "偏好" in text or "memory" in text:
+        return Intent.MEMORY_MANAGEMENT
     if ("分析" in text or "analysis" in text) and ("日报" in text or "report" in text):
         return Intent.COMPOSITE_TASK
     if "日报" in text or "daily report" in text:
@@ -29,15 +50,52 @@ def _classify(message: str) -> Intent:
     return Intent.GENERAL_CHAT
 
 
-def parse_request(state: SupervisorState) -> SupervisorState:
-    return {"intent": _classify(state["message"]), "status": "routed"}
+def parse_request(
+    state: SupervisorState, model: BaseChatModel | None = None
+) -> SupervisorState:
+    if model is not None:
+        decision = model.with_structured_output(RouteDecision).invoke(
+            [
+                (
+                    "system",
+                    "只做办公任务意图分类和最小执行计划，不执行工具或外部写入。",
+                ),
+                ("user", state["message"]),
+            ]
+        )
+        parsed = RouteDecision.model_validate(decision)
+        return {
+            "intent": parsed.intent,
+            "plan": parsed.plan[:8],
+            "status": "routed",
+        }
+    intent = _classify(state["message"])
+    return {
+        "intent": intent,
+        "plan": [f"route:{intent.value}", "validate_result", "prepare_response"],
+        "status": "routed",
+    }
 
 
 def prepare_result(state: SupervisorState) -> SupervisorState:
     intent = state["intent"]
+    subagent_result = state.get("subagent_result")
+    warnings = list(state.get("warnings", []))
+    if intent in {
+        Intent.REPORT_SUBMISSION,
+        Intent.MEETING_REVIEW,
+        Intent.REPORT_EXPORT,
+        Intent.MEMORY_MANAGEMENT,
+    } and subagent_result is None:
+        warnings.append("该操作需要调用对应的受控 API，并完成权限或审核校验。")
     return {
-        "result_message": f"任务已路由至 {intent.value}；仅 Supervisor 受控工具可调用专业 Agent。",
-        "warnings": ["当前调用不执行外部系统写操作。"],
+        "result_message": (
+            f"{intent.value} 任务处理完成。"
+            if subagent_result is not None
+            else f"任务已识别为 {intent.value}。"
+        ),
+        "result": subagent_result or {},
+        "warnings": warnings,
     }
 
 
@@ -86,7 +144,15 @@ async def call_report_agent(state: SupervisorState) -> SupervisorState:
     if not isinstance(report_date, str) or not isinstance(events, list):
         return {"status": "failed", "warnings": ["日报需要 report_date 和 events。"]}
     tool = next(item for item in build_subagent_tools() if item.name == "report_draft_tool")
-    result = await tool.ainvoke({"report_date": report_date, "events": events})
+    result = await tool.ainvoke(
+        {
+            "report_date": report_date,
+            "events": events,
+            "report_type": "weekly"
+            if state["intent"] is Intent.WEEKLY_REPORT
+            else "daily",
+        }
+    )
     return {"subagent_result": result, "status": "completed"}
 
 
@@ -140,7 +206,7 @@ async def analyze_then_generate_report(state: SupervisorState) -> SupervisorStat
 def route_after_parse(state: SupervisorState) -> str:
     if state["intent"] is Intent.EMAIL_POLISH:
         return "call_email_polish_agent"
-    if state["intent"] is Intent.FILE_ANALYSIS:
+    if state["intent"] in {Intent.FILE_ANALYSIS, Intent.CHART_GENERATION}:
         return "call_data_analysis_agent"
     if state["intent"] is Intent.MEETING_MINUTES:
         return "call_meeting_minutes_agent"
@@ -162,11 +228,15 @@ def route_after_report(state: SupervisorState) -> str:
 def build_supervisor_graph(
     checkpointer: BaseCheckpointSaver | None = None,
     knowledge_agent: KnowledgeAgent | None = None,
+    model: BaseChatModel | None = None,
 ):
     # Registered tools are intentionally narrow; state graph keeps orchestration deterministic.
     build_subagent_tools()
     graph = StateGraph(SupervisorState, context_schema=RequestContext)
-    graph.add_node("parse_request", parse_request)
+    def configured_parse_node(state: SupervisorState) -> SupervisorState:
+        return parse_request(state, model)
+
+    graph.add_node("parse_request", configured_parse_node)
     graph.add_node("prepare_result", prepare_result)
     graph.add_node("call_email_polish_agent", call_email_polish_agent)
     graph.add_node("call_data_analysis_agent", call_data_analysis_agent)

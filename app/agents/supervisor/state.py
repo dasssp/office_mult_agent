@@ -12,3 +12,5 @@ class SupervisorState(TypedDict, total=False):
     subagent_result: dict[str, object]
     warnings: list[str]
     approval_comment: str | None
+    plan: list[str]
+    result: dict[str, object]

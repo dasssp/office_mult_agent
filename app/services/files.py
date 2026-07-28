@@ -45,13 +45,27 @@ class FileService:
     max_rows: int = 10_000
     repository: FileRepository | None = None
 
-    _allowed_types: ClassVar[set[str]] = {"csv", "json", "xlsx", "docx", "pdf"}
+    _allowed_types: ClassVar[set[str]] = {
+        "csv",
+        "tsv",
+        "json",
+        "xlsx",
+        "xls",
+        "docx",
+        "pdf",
+        "txt",
+        "md",
+    }
     _content_types: ClassVar[dict[str, set[str]]] = {
         "csv": {"text/csv", "application/csv"},
+        "tsv": {"text/tab-separated-values", "text/tsv"},
         "json": {"application/json", "text/json"},
         "xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        "xls": {"application/vnd.ms-excel"},
         "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
         "pdf": {"application/pdf"},
+        "txt": {"text/plain"},
+        "md": {"text/markdown", "text/plain"},
     }
 
     async def store_and_parse(
@@ -141,24 +155,34 @@ class FileService:
             raise UnsafeFileError("invalid PDF signature")
         if suffix in {"xlsx", "docx"} and not content.startswith(b"PK"):
             raise UnsafeFileError("invalid Office document signature")
+        if suffix == "xls" and not content.startswith(bytes.fromhex("D0CF11E0")):
+            raise UnsafeFileError("invalid XLS signature")
         return suffix
 
     def _parse(self, suffix: str, content: bytes) -> list[dict[str, object]]:
         if suffix == "xlsx":
             return self._parse_xlsx(content)
+        if suffix == "xls":
+            return self._parse_xls(content)
         if suffix == "docx":
             return [{"text": self._parse_docx(content)}]
         if suffix == "pdf":
             return [{"text": self._parse_pdf(content)}]
         text = content.decode("utf-8-sig")
-        return self._parse_csv(text) if suffix == "csv" else self._parse_json(text)
+        if suffix in {"txt", "md"}:
+            return [{"text": text}]
+        if suffix in {"csv", "tsv"}:
+            return self._parse_csv(text, delimiter="\t" if suffix == "tsv" else ",")
+        return self._parse_json(text)
 
     def _validate_row_count(self, rows: list[dict[str, object]]) -> None:
         if len(rows) > self.max_rows:
             raise UnsafeFileError("file exceeds maximum row count")
 
-    def _parse_csv(self, text: str) -> list[dict[str, object]]:
-        rows = list(csv.DictReader(io.StringIO(text)))
+    def _parse_csv(
+        self, text: str, delimiter: str = ","
+    ) -> list[dict[str, object]]:
+        rows = list(csv.DictReader(io.StringIO(text), delimiter=delimiter))
         for row in rows:
             if any(
                 isinstance(value, str) and value.startswith(("=", "+", "-", "@"))
@@ -191,6 +215,26 @@ class FileService:
             return [dict(zip(headers, row, strict=True)) for row in values[1:]]
         finally:
             path.unlink(missing_ok=True)
+
+    def _parse_xls(self, content: bytes) -> list[dict[str, object]]:
+        import xlrd
+
+        workbook = xlrd.open_workbook(file_contents=content, on_demand=True)
+        sheet = workbook.sheet_by_index(0)
+        if sheet.nrows == 0:
+            return []
+        headers = [str(sheet.cell_value(0, column)).strip() for column in range(sheet.ncols)]
+        if not all(headers) or len(set(headers)) != len(headers):
+            raise UnsafeFileError("XLS headers must be present and unique")
+        rows = [
+            {
+                headers[column]: sheet.cell_value(row, column)
+                for column in range(sheet.ncols)
+            }
+            for row in range(1, sheet.nrows)
+        ]
+        workbook.release_resources()
+        return rows
 
     def _parse_docx(self, content: bytes) -> str:
         from docx import Document

@@ -80,3 +80,5 @@ KNOWLEDGE_MCP_SERVICE_TOKEN=请替换为服务间密钥
 开发环境可从请求头构造 Mock 身份；生产环境拒绝此方式。响应会返回请求标识和基础浏览器安全响应头；请求体受 `MAX_REQUEST_BODY_BYTES` 限制。敏感数据检测会在报告提交、会议纪要发送等外部写入前执行。
 
 完整交付状态见 [docs/OPTIMIZATION_STATUS.md](docs/OPTIMIZATION_STATUS.md)。
+
+P1 核心能力扩展见 [docs/P1_OPTIMIZATION_STATUS.md](docs/P1_OPTIMIZATION_STATUS.md)。

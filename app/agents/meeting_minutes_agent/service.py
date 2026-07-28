@@ -4,7 +4,13 @@ from app.repositories.meetings import (
     MeetingMinutesRepository,
 )
 from app.schemas import RequestContext
-from app.schemas.workflows import MeetingEmailStatus, MeetingMinutesDraft, TranscriptSegment
+from app.schemas.workflows import (
+    ActionItem,
+    MeetingDecision,
+    MeetingEmailStatus,
+    MeetingMinutesDraft,
+    TranscriptSegment,
+)
 from app.services.audit import AuditService
 from app.services.idempotency import IdempotencyService
 from app.services.permissions import PermissionService
@@ -32,7 +38,31 @@ class MeetingMinutesAgent:
         evidence_ids = [segment.segment_id for segment in segments]
         summary = " ".join(segment.text for segment in segments)
         warnings = [] if segments else ["没有可用的转写片段，无法生成有证据的纪要。"]
-        draft = MeetingMinutesDraft(meeting_id=meeting_id, title=title, summary=summary, evidence_segment_ids=evidence_ids, warnings=warnings, status="draft")
+        decisions = [
+            MeetingDecision(content=segment.text, evidence_segment_ids=[segment.segment_id])
+            for segment in segments
+            if any(marker in segment.text for marker in ("决定", "决议", "确认"))
+        ]
+        action_items = [
+            ActionItem(content=segment.text, evidence_segment_ids=[segment.segment_id])
+            for segment in segments
+            if any(marker in segment.text for marker in ("负责", "跟进", "完成"))
+        ]
+        if action_items:
+            warnings.append("行动项负责人和截止日期需要人工确认。")
+        low_confidence = [segment.segment_id for segment in segments if segment.confidence < 0.6]
+        if low_confidence:
+            warnings.append(f"低置信度转写片段：{', '.join(low_confidence)}")
+        draft = MeetingMinutesDraft(
+            meeting_id=meeting_id,
+            title=title,
+            summary=summary,
+            evidence_segment_ids=evidence_ids,
+            warnings=warnings,
+            decisions=decisions,
+            action_items=action_items,
+            status="draft",
+        )
         return await self._repository.save(draft, context)
 
     async def review(self, *, meeting_id: str, approved: bool, comment: str | None, context: RequestContext, permissions: PermissionService, audit: AuditService) -> MeetingMinutesDraft:
@@ -42,6 +72,11 @@ class MeetingMinutesAgent:
             raise KeyError(meeting_id)
         draft.status = "approved" if approved else "rejected"
         draft.review_comment = comment
+        draft.version += 1
+        if approved:
+            draft.content_sha256 = hashlib.sha256(
+                draft.model_dump_json(exclude={"content_sha256"}).encode("utf-8")
+            ).hexdigest()
         await audit.record(action="meeting_minutes.review", context=context, target_id=meeting_id)
         return await self._repository.save(draft, context)
 
@@ -70,3 +105,4 @@ class MeetingMinutesAgent:
             context=context,
         )
         return MeetingEmailStatus.model_validate(stored)
+import hashlib

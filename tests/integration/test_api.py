@@ -10,9 +10,17 @@ def test_health_and_assistant_invoke() -> None:
     assert readiness.json() == {"status": "ready"}
     assert readiness.headers["x-content-type-options"] == "nosniff"
     assert readiness.headers["x-request-id"]
-    response = client.post("/assistant/invoke", json={"thread_id": "thread-1", "message": "帮我生成日报"})
+    response = client.post(
+        "/assistant/invoke",
+        json={
+            "thread_id": "thread-1",
+            "message": "帮我生成日报",
+            "task_input": {"report_date": "2026-07-28", "events": []},
+        },
+    )
     assert response.status_code == 200
     assert response.json()["intent"] == "daily_report"
+    assert response.json()["result"]["status"] == "draft"
 
 
 def test_knowledge_query_requires_permission_and_returns_citations() -> None:

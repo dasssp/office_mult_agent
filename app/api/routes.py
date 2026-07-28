@@ -130,6 +130,7 @@ async def invoke_assistant(
             message="draft is awaiting human approval",
             warnings=[],
             awaiting_approval=True,
+            result=state.values.get("subagent_result"),
         )
     return AssistantInvokeResponse(
         request_id=context.request_id,
@@ -138,6 +139,7 @@ async def invoke_assistant(
         status=result["status"],
         message=result["result_message"],
         warnings=result["warnings"],
+        result=result.get("result") or result.get("subagent_result"),
     )
 
 
@@ -193,6 +195,7 @@ async def resume_assistant(
         status=result["status"],
         message=result["result_message"],
         warnings=result["warnings"],
+        result=result.get("result") or result.get("subagent_result"),
     )
 
 
@@ -215,6 +218,10 @@ async def generate_report(payload: ReportGenerateRequest, request: Request) -> R
     events = payload.events or (
         await agent.collect_mock_events() if payload.use_mock_sources else []
     )
+    if payload.report_type == "weekly":
+        return await agent.generate_weekly(
+            week_start=payload.report_date, events=events, context=context
+        )
     return await agent.generate_daily(
         report_date=payload.report_date, events=events, context=context
     )
@@ -345,6 +352,7 @@ async def export_uploaded_analysis(file_id: str, request: Request) -> dict[str, 
         result = DataAnalysisAgent().analyze(
             rows=await _files_for(request).get_rows(file_id, context)
         )
+        result.source_file_id = file_id
         return await _artifacts_for(request).export_analysis(result, context)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="file not found") from error

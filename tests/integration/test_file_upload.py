@@ -57,6 +57,10 @@ def test_analyze_uploaded_file() -> None:
     exported = client.post(f"/analysis/files/{uploaded.json()['file_id']}/export")
     assert exported.status_code == 200
     assert exported.json()["chart_svg"].endswith(".svg")
+    assert exported.json()["report_word"].endswith(".docx")
+    assert exported.json()["report_excel"].endswith(".xlsx")
+    assert exported.json()["report_pdf"].endswith(".pdf")
+    assert exported.json()["report_html"].endswith(".html")
 
 
 def test_uploaded_file_is_isolated_by_tenant() -> None:

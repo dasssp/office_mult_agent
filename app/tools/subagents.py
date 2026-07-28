@@ -38,11 +38,22 @@ def build_subagent_tools(context: RequestContext | None = None):
         return draft.model_dump()
 
     @tool
-    async def report_draft_tool(report_date: str, events: list[dict[str, object]]) -> dict:
+    async def report_draft_tool(
+        report_date: str,
+        events: list[dict[str, object]],
+        report_type: str = "daily",
+    ) -> dict:
         """Create an evidence-backed report draft. It never submits a report."""
         from app.schemas.workflows import WorkEvent
 
         parsed = [WorkEvent.model_validate(item) for item in events]
-        return (await ReportAgent().generate_daily(report_date=report_date, events=parsed)).model_dump()
+        agent = ReportAgent()
+        if report_type == "weekly":
+            return (
+                await agent.generate_weekly(week_start=report_date, events=parsed)
+            ).model_dump()
+        return (
+            await agent.generate_daily(report_date=report_date, events=parsed)
+        ).model_dump()
 
     return [data_analysis_tool, email_polish_tool, meeting_minutes_tool, report_draft_tool]

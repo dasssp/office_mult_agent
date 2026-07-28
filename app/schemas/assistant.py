@@ -8,9 +8,14 @@ class Intent(StrEnum):
     COMPOSITE_TASK = "composite_task"
     DAILY_REPORT = "daily_report"
     WEEKLY_REPORT = "weekly_report"
+    REPORT_SUBMISSION = "report_submission"
     MEETING_MINUTES = "meeting_minutes"
+    MEETING_REVIEW = "meeting_review"
     EMAIL_POLISH = "email_polish"
     FILE_ANALYSIS = "file_analysis"
+    CHART_GENERATION = "chart_generation"
+    REPORT_EXPORT = "report_export"
+    MEMORY_MANAGEMENT = "memory_management"
     KNOWLEDGE_QA = "knowledge_qa"
     GENERAL_CHAT = "general_chat"
     UNSUPPORTED = "unsupported"
@@ -45,6 +50,7 @@ class AssistantInvokeResponse(BaseModel):
     message: str
     warnings: list[str] = Field(default_factory=list)
     awaiting_approval: bool = False
+    result: dict[str, object] | None = None
 
 
 class AssistantResumeRequest(BaseModel):

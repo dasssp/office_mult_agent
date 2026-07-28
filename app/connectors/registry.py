@@ -11,6 +11,17 @@ class ConnectorUnavailableError(RuntimeError):
 
 
 class UnavailableReportSystemConnector:
+    async def get_projects(self, *, context: RequestContext) -> list[dict]:
+        raise ConnectorUnavailableError("report system connector is not configured")
+
+    async def get_work_types(self, *, context: RequestContext) -> list[dict]:
+        raise ConnectorUnavailableError("report system connector is not configured")
+
+    async def get_report(
+        self, *, report_id: str, context: RequestContext
+    ) -> dict | None:
+        raise ConnectorUnavailableError("report system connector is not configured")
+
     async def submit_report(
         self, *, report: dict, idempotency_key: str, context: RequestContext
     ) -> dict:
@@ -18,6 +29,16 @@ class UnavailableReportSystemConnector:
 
     async def get_report_status(
         self, *, submission_id: str, context: RequestContext
+    ) -> dict:
+        raise ConnectorUnavailableError("report system connector is not configured")
+
+    async def update_report(
+        self,
+        *,
+        report_id: str,
+        report: dict,
+        idempotency_key: str,
+        context: RequestContext,
     ) -> dict:
         raise ConnectorUnavailableError("report system connector is not configured")
 
@@ -30,6 +51,11 @@ class UnavailableEmailConnector:
         body: str,
         idempotency_key: str,
         context: RequestContext,
+    ) -> dict[str, str]:
+        raise ConnectorUnavailableError("email connector is not configured")
+
+    async def get_send_status(
+        self, *, message_id: str, context: RequestContext
     ) -> dict[str, str]:
         raise ConnectorUnavailableError("email connector is not configured")
 

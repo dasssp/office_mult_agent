@@ -26,6 +26,7 @@ class ReportAgent:
     async def generate_daily(
         self, *, report_date: str, events: list[WorkEvent], context: RequestContext | None = None
     ) -> ReportDraft:
+        events = self._deduplicate(events)
         completed = [event for event in events if event.status == "completed"]
         in_progress = [event for event in events if event.status == "in_progress"]
         blocked = [event for event in events if event.status == "blocked"]
@@ -34,10 +35,43 @@ class ReportAgent:
             completed=[event.title for event in completed],
             in_progress=[event.title for event in in_progress],
             risks=[event.title for event in blocked],
+            plans=[event.title for event in events if event.status == "planned"],
             evidence_event_ids=[event.event_id for event in events],
+            overview=f"共汇总 {len(events)} 项有证据的工作事件。",
+            source_warnings=[
+                f"事件 {event.event_id} 状态或证据可信度需要确认"
+                for event in events
+                if event.status == "unknown" or event.confidence < 0.6
+            ],
             status="draft",
         )
         return await self.repository.save(draft, context)
+
+    async def generate_weekly(
+        self,
+        *,
+        week_start: str,
+        events: list[WorkEvent],
+        context: RequestContext | None = None,
+    ) -> ReportDraft:
+        draft = await self.generate_daily(
+            report_date=week_start,
+            events=events,
+            context=context,
+        )
+        draft.report_type = "weekly"
+        draft.overview = f"本周共汇总 {len(draft.evidence_event_ids)} 项去重后的工作事件。"
+        return await self.repository.save(draft, context)
+
+    @staticmethod
+    def _deduplicate(events: list[WorkEvent]) -> list[WorkEvent]:
+        selected: dict[tuple[str | None, str], WorkEvent] = {}
+        for event in events:
+            key = (event.project_id, " ".join(event.title.lower().split()))
+            current = selected.get(key)
+            if current is None or event.confidence > current.confidence:
+                selected[key] = event
+        return list(selected.values())
 
     async def review(self, *, report_id: str, approved: bool, comment: str | None, context: RequestContext, permissions: PermissionService, audit: AuditService) -> ReportDraft:
         permissions.require(context, "report:review")
