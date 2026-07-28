@@ -44,7 +44,7 @@ async def health() -> dict[str, str]:
 @router.post("/assistant/invoke", response_model=AssistantInvokeResponse)
 async def invoke_assistant(payload: AssistantInvokeRequest, request: Request) -> AssistantInvokeResponse:
     context = build_development_context(request, payload.thread_id)
-    result = await _graph.ainvoke({"message": payload.message})
+    result = await _graph.ainvoke({"message": payload.message, "task_input": payload.task_input})
     return AssistantInvokeResponse(
         request_id=context.request_id,
         thread_id=context.thread_id,

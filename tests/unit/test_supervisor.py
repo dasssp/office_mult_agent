@@ -12,3 +12,11 @@ def test_supervisor_invokes_email_subagent_tool() -> None:
     result = build_supervisor_graph().invoke({"message": "请润色这封邮件"})
     assert result["status"] == "completed"
     assert result["subagent_result"]["status"] == "draft"
+
+
+def test_supervisor_invokes_data_analysis_subagent_tool() -> None:
+    result = build_supervisor_graph().invoke(
+        {"message": "分析 CSV 数据", "task_input": {"rows": [{"amount": 1}, {"amount": None}]}}
+    )
+    assert result["status"] == "completed"
+    assert result["subagent_result"]["null_counts"] == {"amount": 1}

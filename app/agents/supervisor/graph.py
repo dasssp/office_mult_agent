@@ -40,8 +40,21 @@ def call_email_polish_agent(state: SupervisorState) -> SupervisorState:
     return {"subagent_result": result, "status": "completed"}
 
 
+def call_data_analysis_agent(state: SupervisorState) -> SupervisorState:
+    rows = state.get("task_input", {}).get("rows", [])
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        return {"status": "failed", "warnings": ["数据分析需要 task_input.rows 数组。"]}
+    tool = next(item for item in build_subagent_tools() if item.name == "data_analysis_tool")
+    result = tool.invoke({"rows": rows})
+    return {"subagent_result": result, "status": "completed"}
+
+
 def route_after_parse(state: SupervisorState) -> str:
-    return "call_email_polish_agent" if state["intent"] is Intent.EMAIL_POLISH else "prepare_result"
+    if state["intent"] is Intent.EMAIL_POLISH:
+        return "call_email_polish_agent"
+    if state["intent"] is Intent.FILE_ANALYSIS:
+        return "call_data_analysis_agent"
+    return "prepare_result"
 
 
 def build_supervisor_graph():
@@ -51,8 +64,10 @@ def build_supervisor_graph():
     graph.add_node("parse_request", parse_request)
     graph.add_node("prepare_result", prepare_result)
     graph.add_node("call_email_polish_agent", call_email_polish_agent)
+    graph.add_node("call_data_analysis_agent", call_data_analysis_agent)
     graph.add_edge(START, "parse_request")
     graph.add_conditional_edges("parse_request", route_after_parse)
     graph.add_edge("call_email_polish_agent", "prepare_result")
+    graph.add_edge("call_data_analysis_agent", "prepare_result")
     graph.add_edge("prepare_result", END)
     return graph.compile()

@@ -32,6 +32,7 @@ class RequestContext(BaseModel):
 class AssistantInvokeRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=8000)
+    task_input: dict[str, object] = Field(default_factory=dict)
 
 
 class AssistantInvokeResponse(BaseModel):
