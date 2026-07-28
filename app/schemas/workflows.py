@@ -1,4 +1,5 @@
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -12,16 +13,30 @@ class WorkEvent(BaseModel):
 
 class ReportGenerateRequest(BaseModel):
     report_date: str
-    events: list[WorkEvent]
+    events: list[WorkEvent] = Field(default_factory=list)
+    use_mock_sources: bool = False
 
 
 class ReportDraft(BaseModel):
+    report_id: str = Field(default_factory=lambda: str(uuid4()))
     report_date: str
     completed: list[str]
     in_progress: list[str]
     risks: list[str]
     evidence_event_ids: list[str]
-    status: Literal["draft"]
+    status: Literal["draft", "approved", "rejected", "submitted"]
+    review_comment: str | None = None
+
+
+class ReportReviewRequest(BaseModel):
+    approved: bool
+    comment: str | None = Field(default=None, max_length=1000)
+
+
+class ReportSubmission(BaseModel):
+    report_id: str
+    submission_id: str
+    status: Literal["submitted"]
 
 
 class TranscriptSegment(BaseModel):

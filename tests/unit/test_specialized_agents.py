@@ -1,11 +1,14 @@
+import pytest
+
 from app.agents.data_analysis_agent import DataAnalysisAgent
 from app.agents.email_polish_agent import EmailPolishAgent
 from app.agents.report_agent import ReportAgent
 from app.schemas.workflows import WorkEvent
 
 
-def test_report_does_not_treat_plan_as_completed() -> None:
-    draft = ReportAgent().generate_daily(report_date="2026-07-28", events=[WorkEvent(event_id="1", title="准备发布", status="planned")])
+@pytest.mark.asyncio
+async def test_report_does_not_treat_plan_as_completed() -> None:
+    draft = await ReportAgent().generate_daily(report_date="2026-07-28", events=[WorkEvent(event_id="1", title="准备发布", status="planned")])
     assert draft.completed == []
     assert draft.evidence_event_ids == ["1"]
 

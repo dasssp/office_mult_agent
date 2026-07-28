@@ -2,6 +2,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents.supervisor.state import SupervisorState
 from app.schemas import Intent
+from app.tools import build_subagent_tools
 
 
 def _classify(message: str) -> Intent:
@@ -28,12 +29,14 @@ def parse_request(state: SupervisorState) -> SupervisorState:
 def prepare_result(state: SupervisorState) -> SupervisorState:
     intent = state["intent"]
     return {
-        "result_message": f"任务已路由至 {intent.value}；专业 Agent 闭环将在第二阶段接入。",
-        "warnings": ["当前为基础工程，未执行外部系统写操作。"],
+        "result_message": f"任务已路由至 {intent.value}；仅 Supervisor 受控工具可调用专业 Agent。",
+        "warnings": ["当前调用不执行外部系统写操作。"],
     }
 
 
 def build_supervisor_graph():
+    # Registered tools are intentionally narrow; state graph keeps orchestration deterministic.
+    build_subagent_tools()
     graph = StateGraph(SupervisorState)
     graph.add_node("parse_request", parse_request)
     graph.add_node("prepare_result", prepare_result)

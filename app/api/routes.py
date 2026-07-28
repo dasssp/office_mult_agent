@@ -1,19 +1,34 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
-from app.agents.supervisor import build_supervisor_graph
-from app.middleware.context import build_development_context
-from app.schemas import AssistantInvokeRequest, AssistantInvokeResponse
-from app.schemas.workflows import (
-    DataAnalysisRequest, DataAnalysisResult, EmailPolishDraft, EmailPolishRequest,
-    MeetingMinutesDraft, MeetingMinutesRequest, ReportDraft, ReportGenerateRequest,
-)
 from app.agents.data_analysis_agent import DataAnalysisAgent
 from app.agents.email_polish_agent import EmailPolishAgent
 from app.agents.meeting_minutes_agent import MeetingMinutesAgent
 from app.agents.report_agent import ReportAgent
+from app.agents.supervisor import build_supervisor_graph
+from app.connectors.mocks.report_system import MockReportSystemConnector
+from app.middleware.context import build_development_context
+from app.schemas import AssistantInvokeRequest, AssistantInvokeResponse
+from app.schemas.workflows import (
+    DataAnalysisRequest,
+    DataAnalysisResult,
+    EmailPolishDraft,
+    EmailPolishRequest,
+    MeetingMinutesDraft,
+    MeetingMinutesRequest,
+    ReportDraft,
+    ReportGenerateRequest,
+    ReportReviewRequest,
+    ReportSubmission,
+)
+from app.services.audit import AuditService
+from app.services.permissions import PermissionService
 
 router = APIRouter()
 _graph = build_supervisor_graph()
+_report_agent = ReportAgent()
+_report_connector = MockReportSystemConnector()
+_permissions = PermissionService()
+_audit = AuditService()
 
 
 @router.get("/health")
@@ -37,7 +52,32 @@ async def invoke_assistant(payload: AssistantInvokeRequest, request: Request) ->
 
 @router.post("/reports/generate", response_model=ReportDraft)
 async def generate_report(payload: ReportGenerateRequest) -> ReportDraft:
-    return ReportAgent().generate_daily(report_date=payload.report_date, events=payload.events)
+    events = payload.events or (await _report_agent.collect_mock_events() if payload.use_mock_sources else [])
+    return await _report_agent.generate_daily(report_date=payload.report_date, events=events)
+
+
+@router.post("/reports/{report_id}/review", response_model=ReportDraft)
+async def review_report(report_id: str, payload: ReportReviewRequest) -> ReportDraft:
+    try:
+        return await _report_agent.review(report_id=report_id, approved=payload.approved, comment=payload.comment)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="report not found") from error
+
+
+@router.post("/reports/{report_id}/submit", response_model=ReportSubmission)
+async def submit_report(report_id: str, request: Request) -> ReportSubmission:
+    context = build_development_context(request, thread_id=f"report:{report_id}")
+    try:
+        return await _report_agent.submit(
+            report_id=report_id, context=context, connector=_report_connector,
+            permissions=_permissions, audit=_audit,
+        )
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="report not found") from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/meetings/{meeting_id}/minutes", response_model=MeetingMinutesDraft)
