@@ -4,8 +4,8 @@ from typing import Literal, cast
 
 from pydantic import ValidationError
 
-from app.agents.meeting_minutes_agent import MeetingMinutesAgent
 from app.connectors.base import EmailConnector, GitLabConnector, TaskConnector
+from app.domain import MeetingMinutesService
 from app.schemas import RequestContext
 from app.schemas.workflows import (
     EmailActivity,
@@ -26,7 +26,7 @@ class MultiSourceWorkEventCollector:
         gitlab: GitLabConnector,
         tasks: TaskConnector,
         email: EmailConnector,
-        meeting_minutes: MeetingMinutesAgent,
+        meeting_minutes: MeetingMinutesService,
     ) -> None:
         self._gitlab = gitlab
         self._tasks = tasks

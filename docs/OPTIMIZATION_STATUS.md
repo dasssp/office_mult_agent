@@ -9,9 +9,12 @@
    - `RequestContext` 仅作为运行时上下文传入，不会序列化到检查点。
    - 已启用严格 LangGraph msgpack 模式。
 
-2. **独立 MCP 知识库边界**
-   - `McpKnowledgeConnector` 通过 Streamable HTTP 调用 `knowledge_answer_tool`。
-   - 使用 `KNOWLEDGE_MCP_URL` 启用真实连接器；本地 Mock 仅限开发环境。
+2. **Java RAG MCP 知识库边界**
+   - `McpKnowledgeConnector` 使用 LangChain `MultiServerMCPClient`，通过 Streamable
+     HTTP 直接调用 Java RAG 的 `knowledge_answer_tool`。
+   - SSO Token 仅保存在请求级上下文中并写入 MCP 传输头，不进入 Prompt、工具参数、
+     Checkpoint、缓存或日志；知识权限由 Java RAG 统一判定。
+   - Redis 结果缓存按租户与用户隔离；即使缓存命中也要求请求携带 SSO Token。
 
 3. **租户与身份控制**
    - 可信运行时上下文与 LLM 可控输入分离。
@@ -41,7 +44,8 @@
 ```env
 DATABASE_URL=postgresql+asyncpg://office_app:password@postgres:5432/office_multi_agent
 LANGGRAPH_STRICT_MSGPACK=true
-KNOWLEDGE_MCP_URL=http://knowledge-mcp-adapter:8001/mcp
+KNOWLEDGE_MCP_URL=http://localhost:8000/mcp
+KNOWLEDGE_MCP_ANSWER_TOOL=knowledge_answer_tool
 ```
 
 启动 API 前执行迁移：
@@ -52,6 +56,8 @@ alembic upgrade head
 
 ## 尚需接入的生产能力
 
-本仓库不会宣称已接通企业系统。生产部署仍需由企业提供并接入：认证网关与身份注入、Java RAG 身份透传及 REST 契约、对象存储与病毒扫描、真实的报告/邮件/IM/Git/任务连接器、任务队列、调度执行器、DLP、密钥管理和可观测性后端。
+本仓库不会宣称已接通企业系统。生产部署仍需由企业提供并接入：认证网关与可信身份注入、
+Java RAG MCP 的真实工具契约与 SSO 验证环境、对象存储与病毒扫描、真实的报告/邮件/IM/Git/
+任务连接器、任务队列、调度执行器、DLP、密钥管理和可观测性后端。
 
 当前的服务边界与 Mock 旨在支持后续接入，同时避免在 Agent 节点中直接处理凭据或发起 HTTP 请求。

@@ -2,7 +2,7 @@ from app.schemas.workflows import EmailPolishDraft
 from app.services.sensitive_data import SensitiveDataService
 
 
-class EmailPolishAgent:
+class EmailPolishService:
     def polish(self, *, subject: str, body: str, attachments: list[str]) -> EmailPolishDraft:
         warnings: list[str] = []
         issues: list[str] = []

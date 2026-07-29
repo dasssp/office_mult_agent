@@ -1,13 +1,11 @@
-# Deep Agent 改造说明
+# 系统架构说明
 
 更新时间：2026-07-28
 
 ## 当前架构
 
-项目保留两种运行时：
-
-- `legacy`：固定 StateGraph，适合无模型环境和确定性回归；
-- `deep_agent`：主 Agent 动态规划，并通过 `task` 委派专业子 Agent。
+项目使用单一 Deep Agent 编排运行时：主 Supervisor 动态规划，并通过 `task` 委派专业
+Worker。开发环境缺少模型配置时不会构造 Assistant Runtime，也不会静默切换到另一套逻辑。
 
 Deep Agent 运行时由以下层次组成：
 
@@ -24,6 +22,24 @@ Deep Agent 运行时由以下层次组成：
 
 Report 和 Meeting 不是一组平铺工具，而是独立编译的 LangGraph 子图。子图继承父图运行时
 上下文和检查点，核心写操作仍由确定性的 Service、Repository 和 Connector 完成。
+
+## Java RAG MCP 调用链
+
+```text
+浏览器 / SSO 网关
+  └─ Authorization: Bearer <用户 Token>
+      └─ RuntimeSecurityMiddleware（请求级 ContextVar，结束后立即清除）
+          └─ Knowledge SubAgent
+              └─ KnowledgeService（缓存前认证 + 引用结构校验）
+                  └─ Redis 用户隔离缓存
+                      └─ MultiServerMCPClient（streamable_http）
+                          └─ http://localhost:8000/mcp
+                              └─ Java RAG（鉴权、文档权限、检索与回答）
+```
+
+Token 不属于 Agent 状态，不允许模型生成，也不会进入工具参数、Checkpoint、缓存键或日志。
+Python 侧只验证 Java RAG 返回的答案与引用结构，不重复实现文档权限规则。缓存键包含租户、
+操作人、员工、角色和权限范围；缓存命中前仍要求当前请求存在 SSO Token。
 
 ## 动态规划与重规划
 

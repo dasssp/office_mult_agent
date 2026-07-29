@@ -13,12 +13,6 @@ from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
-from app.agents.data_analysis_agent import DataAnalysisAgent
-from app.agents.email_polish_agent import EmailPolishAgent
-from app.agents.knowledge_agent import KnowledgeAgent
-from app.agents.meeting_minutes_agent import MeetingMinutesAgent
-from app.agents.report_agent import ReportAgent
-from app.agents.supervisor import build_supervisor_graph
 from app.api.routes import router
 from app.config import get_settings
 from app.connectors.base import KnowledgeConnector
@@ -27,8 +21,19 @@ from app.connectors.mcp_knowledge import McpKnowledgeConnector
 from app.connectors.mocks.knowledge import MockKnowledgeConnector
 from app.connectors.registry import ConnectorRegistry
 from app.database import Database
+from app.domain import (
+    DataAnalysisService,
+    EmailPolishService,
+    KnowledgeService,
+    MeetingMinutesService,
+    ReportService,
+)
 from app.middleware.runtime import RuntimeSecurityMiddleware
-from app.orchestration import DeepAgentDependencies, DeepAgentRuntime, build_main_deep_agent
+from app.orchestration import (
+    OrchestrationDependencies,
+    SupervisorRuntime,
+    build_supervisor,
+)
 from app.repositories.artifacts import SqlAlchemyArtifactRepository
 from app.repositories.files import SqlAlchemyFileRepository
 from app.repositories.meetings import SqlAlchemyMeetingMinutesRepository
@@ -41,6 +46,7 @@ from app.repositories.runtime import (
     SqlAlchemyIdempotencyRepository,
     SqlAlchemyRuntimeStateRepository,
 )
+from app.security import RequestSsoTokenProvider
 from app.services.approvals import ApprovalService
 from app.services.artifacts import ArtifactService
 from app.services.audit import AuditService
@@ -70,16 +76,17 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("GITLAB_ACCESS_TOKEN is required in production")
     if settings.app_env == "production" and not settings.knowledge_mcp_url:
         raise RuntimeError("KNOWLEDGE_MCP_URL is required in production")
-    if settings.app_env == "production" and not settings.knowledge_mcp_service_token:
-        raise RuntimeError("KNOWLEDGE_MCP_SERVICE_TOKEN is required in production")
-    if settings.assistant_runtime == "deep_agent" and not settings.agent_model:
-        raise RuntimeError("AGENT_MODEL is required when ASSISTANT_RUNTIME=deep_agent")
+    if settings.app_env == "production" and not settings.agent_model:
+        raise RuntimeError("AGENT_MODEL is required in production")
     database = Database(settings.database_url) if settings.database_url else None
     cache = RedisJsonCache(settings.redis_url) if settings.redis_url else None
+    sso_token_provider = RequestSsoTokenProvider()
     knowledge_connector: KnowledgeConnector = (
         McpKnowledgeConnector(
             settings.knowledge_mcp_url,
-            service_token=settings.knowledge_mcp_service_token,
+            token_provider=sso_token_provider,
+            answer_tool_name=settings.knowledge_mcp_answer_tool,
+            timeout_seconds=settings.knowledge_mcp_timeout_seconds,
         )
         if settings.knowledge_mcp_url
         else MockKnowledgeConnector()
@@ -91,8 +98,11 @@ async def lifespan(app: FastAPI):
             key_prefix=settings.redis_key_prefix,
             ttl_seconds=settings.redis_knowledge_ttl_seconds,
         )
-    knowledge_agent = KnowledgeAgent(knowledge_connector)
-    app.state.knowledge_agent = knowledge_agent
+    knowledge_service = KnowledgeService(
+        knowledge_connector,
+        token_provider=sso_token_provider if settings.knowledge_mcp_url else None,
+    )
+    app.state.knowledge_service = knowledge_service
     app.state.cache = cache
     app.state.connectors = ConnectorRegistry.for_environment(
         settings.app_env,
@@ -109,9 +119,7 @@ async def lifespan(app: FastAPI):
     checkpointer: BaseCheckpointSaver
     if database is not None and settings.database_url is not None:
         app.state.database = database
-        idempotency = IdempotencyService(
-            SqlAlchemyIdempotencyRepository(database.session_factory)
-        )
+        idempotency = IdempotencyService(SqlAlchemyIdempotencyRepository(database.session_factory))
         runtime_repository = SqlAlchemyRuntimeStateRepository(database.session_factory)
         app.state.memory = MemoryService(
             runtime_repository,
@@ -121,17 +129,15 @@ async def lifespan(app: FastAPI):
         )
         app.state.background_tasks = BackgroundTaskService(runtime_repository)
         app.state.schedules = ScheduleService(runtime_repository)
-        app.state.files = FileService(
-            repository=SqlAlchemyFileRepository(database.session_factory)
-        )
+        app.state.files = FileService(repository=SqlAlchemyFileRepository(database.session_factory))
         app.state.artifacts = ArtifactService(
             repository=SqlAlchemyArtifactRepository(database.session_factory)
         )
-        app.state.report_agent = ReportAgent(
+        app.state.report_service = ReportService(
             SqlAlchemyReportRepository(database.session_factory),
             idempotency=idempotency,
         )
-        app.state.meeting_agent = MeetingMinutesAgent(
+        app.state.meeting_service = MeetingMinutesService(
             SqlAlchemyMeetingMinutesRepository(database.session_factory),
             idempotency=idempotency,
         )
@@ -145,7 +151,7 @@ async def lifespan(app: FastAPI):
         checkpointer_context = AsyncPostgresSaver.from_conn_string(checkpoint_url)
         checkpointer = await checkpointer_context.__aenter__()
         await checkpointer.setup()
-        if settings.assistant_runtime == "deep_agent":
+        if settings.agent_model:
             store_context = AsyncPostgresStore.from_conn_string(checkpoint_url)
             store = await store_context.__aenter__()
             await store.setup()
@@ -161,19 +167,20 @@ async def lifespan(app: FastAPI):
         app.state.schedules = ScheduleService()
         app.state.files = FileService()
         app.state.artifacts = ArtifactService()
-        app.state.report_agent = ReportAgent()
-        app.state.meeting_agent = MeetingMinutesAgent()
+        app.state.report_service = ReportService()
+        app.state.meeting_service = MeetingMinutesService()
         app.state.audit = AuditService()
         app.state.approvals = ApprovalService()
 
-    if settings.assistant_runtime == "deep_agent":
+    app.state.assistant_runtime = None
+    if settings.agent_model:
         model = cast(BaseChatModel, init_chat_model(settings.agent_model))
-        dependencies = DeepAgentDependencies(
-            report_agent=app.state.report_agent,
-            meeting_agent=app.state.meeting_agent,
-            email_agent=EmailPolishAgent(),
-            data_agent=DataAnalysisAgent(),
-            knowledge_agent=knowledge_agent,
+        dependencies = OrchestrationDependencies(
+            report_service=app.state.report_service,
+            meeting_service=app.state.meeting_service,
+            email_service=EmailPolishService(),
+            data_analysis_service=DataAnalysisService(),
+            knowledge_service=knowledge_service,
             report_connector=app.state.connectors.report_system,
             email_connector=app.state.connectors.email,
             meeting_connector=app.state.connectors.meeting_im,
@@ -187,8 +194,8 @@ async def lifespan(app: FastAPI):
             memory=app.state.memory,
             background_tasks=app.state.background_tasks,
         )
-        app.state.graph = DeepAgentRuntime(
-            build_main_deep_agent(
+        app.state.assistant_runtime = SupervisorRuntime(
+            build_supervisor(
                 model=model,
                 dependencies=dependencies,
                 checkpointer=checkpointer,
@@ -200,10 +207,6 @@ async def lifespan(app: FastAPI):
             store=store,
             recursion_limit=settings.agent_recursion_limit,
             timeout_seconds=settings.agent_timeout_seconds,
-        )
-    else:
-        app.state.graph = build_supervisor_graph(
-            checkpointer=checkpointer, knowledge_agent=knowledge_agent
         )
     try:
         yield

@@ -8,11 +8,6 @@ from langchain_core.runnables import Runnable
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
-from app.agents.data_analysis_agent import DataAnalysisAgent
-from app.agents.email_polish_agent import EmailPolishAgent
-from app.agents.knowledge_agent import KnowledgeAgent
-from app.agents.meeting_minutes_agent import MeetingMinutesAgent
-from app.agents.report_agent import ReportAgent
 from app.connectors.mocks.email import MockEmailConnector
 from app.connectors.mocks.enterprise import (
     MockASRService,
@@ -21,10 +16,21 @@ from app.connectors.mocks.enterprise import (
     MockTaskConnector,
 )
 from app.connectors.mocks.report_system import MockReportSystemConnector
-from app.orchestration import DeepAgentDependencies, DeepAgentRuntime, build_main_deep_agent
-from app.orchestration.domain_graphs import build_report_subgraph
+from app.domain import (
+    DataAnalysisService,
+    EmailPolishService,
+    KnowledgeService,
+    MeetingMinutesService,
+    ReportService,
+)
+from app.orchestration import (
+    OrchestrationDependencies,
+    SupervisorRuntime,
+    build_supervisor,
+)
 from app.orchestration.middleware import count_tool_calls, requires_replan
-from app.orchestration.subagents import build_subagent_profiles
+from app.orchestration.worker_graphs import build_report_subgraph
+from app.orchestration.workers import build_worker_profiles
 from app.schemas import RequestContext
 from app.schemas.workflows import TranscriptSegment
 from app.services.artifacts import ArtifactService
@@ -95,13 +101,13 @@ def _report_model(arguments: dict[str, Any]) -> ToolCallingFakeChatModel:
     return ToolCallingFakeChatModel(messages=messages)
 
 
-def _dependencies(tmp_path) -> DeepAgentDependencies:
-    return DeepAgentDependencies(
-        report_agent=ReportAgent(),
-        meeting_agent=MeetingMinutesAgent(),
-        email_agent=EmailPolishAgent(),
-        data_agent=DataAnalysisAgent(),
-        knowledge_agent=KnowledgeAgent(),
+def _dependencies(tmp_path) -> OrchestrationDependencies:
+    return OrchestrationDependencies(
+        report_service=ReportService(),
+        meeting_service=MeetingMinutesService(),
+        email_service=EmailPolishService(),
+        data_analysis_service=DataAnalysisService(),
+        knowledge_service=KnowledgeService(),
         report_connector=MockReportSystemConnector(),
         email_connector=MockEmailConnector(),
         meeting_connector=MockMeetingIMConnector(),
@@ -118,7 +124,7 @@ def _dependencies(tmp_path) -> DeepAgentDependencies:
 
 
 def test_subagents_have_isolated_tool_sets_and_write_interrupts(tmp_path) -> None:
-    profiles = build_subagent_profiles(_model(), _dependencies(tmp_path))
+    profiles = build_worker_profiles(_model(), _dependencies(tmp_path))
     by_name = {profile["name"]: profile for profile in profiles}
 
     assert set(by_name) == {
@@ -161,7 +167,7 @@ def test_subagents_have_isolated_tool_sets_and_write_interrupts(tmp_path) -> Non
 
 
 def test_main_deep_agent_contains_planning_and_delegation_middleware(tmp_path) -> None:
-    graph = build_main_deep_agent(
+    graph = build_supervisor(
         model=_model(),
         dependencies=_dependencies(tmp_path),
         checkpointer=InMemorySaver(),
@@ -173,7 +179,7 @@ def test_main_deep_agent_contains_planning_and_delegation_middleware(tmp_path) -
 
 
 def test_deep_runtime_adapts_structured_result_to_existing_api() -> None:
-    runtime = DeepAgentRuntime(graph=object())
+    runtime = SupervisorRuntime(graph=object())
     result = runtime._adapt(
         {
             "messages": [
@@ -191,13 +197,10 @@ def test_deep_runtime_adapts_structured_result_to_existing_api() -> None:
 
 
 def test_write_tools_map_to_least_privilege_review_scopes() -> None:
-    assert DeepAgentRuntime._required_scope(["submit_report"]) == "report:submit"
+    assert SupervisorRuntime._required_scope(["submit_report"]) == "report:submit"
+    assert SupervisorRuntime._required_scope(["send_meeting_minutes"]) == "meeting:send"
     assert (
-        DeepAgentRuntime._required_scope(["send_meeting_minutes"])
-        == "meeting:send"
-    )
-    assert (
-        DeepAgentRuntime._required_scope(["submit_report", "send_meeting_minutes"])
+        SupervisorRuntime._required_scope(["submit_report", "send_meeting_minutes"])
         == "assistant:review"
     )
 
@@ -271,7 +274,7 @@ async def test_report_compiled_subgraph_generates_evidence_draft(tmp_path) -> No
         permission_scopes={"meeting:review"},
     )
     dependencies = _dependencies(tmp_path)
-    await dependencies.meeting_agent.generate(
+    await dependencies.meeting_service.generate(
         meeting_id="meeting-report-source",
         title="日报数据评审会",
         meeting_date="2026-07-28",
@@ -284,7 +287,7 @@ async def test_report_compiled_subgraph_generates_evidence_draft(tmp_path) -> No
         ],
         context=context,
     )
-    await dependencies.meeting_agent.review(
+    await dependencies.meeting_service.review(
         meeting_id="meeting-report-source",
         approved=True,
         comment=None,
@@ -324,13 +327,13 @@ async def test_report_compiled_subgraph_generates_evidence_draft(tmp_path) -> No
 async def test_deep_runtime_smoke_invocation_with_structured_output(tmp_path) -> None:
     store = InMemoryStore()
     memory = MemoryService()
-    graph = build_main_deep_agent(
+    graph = build_supervisor(
         model=_structured_model(),
         dependencies=_dependencies(tmp_path),
         checkpointer=InMemorySaver(),
         store=store,
     )
-    runtime = DeepAgentRuntime(graph=graph, memory=memory, store=store)
+    runtime = SupervisorRuntime(graph=graph, memory=memory, store=store)
     context = RequestContext(
         thread_id="deep-smoke",
         tenant_id="tenant-a",
@@ -362,7 +365,7 @@ async def test_confirmed_memory_is_synced_to_tenant_user_namespace() -> None:
         confirmed=True,
         context=context,
     )
-    runtime = DeepAgentRuntime(graph=object(), memory=memory, store=store)
+    runtime = SupervisorRuntime(graph=object(), memory=memory, store=store)
 
     await runtime._sync_confirmed_memory(context)
 

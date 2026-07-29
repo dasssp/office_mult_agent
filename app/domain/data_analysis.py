@@ -1,7 +1,7 @@
 from app.schemas.workflows import DataAnalysisResult
 
 
-class DataAnalysisAgent:
+class DataAnalysisService:
     def analyze(self, *, rows: list[dict[str, object]]) -> DataAnalysisResult:
         columns = sorted({key for row in rows for key in row})
         null_counts = {column: sum(row.get(column) in (None, "") for row in rows) for column in columns}

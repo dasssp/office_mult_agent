@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
-def test_health_and_assistant_invoke() -> None:
+def test_health_and_unconfigured_assistant_runtime() -> None:
     client = TestClient(app)
     assert client.get("/health").json() == {"status": "ok"}
     readiness = client.get("/ready")
@@ -18,33 +18,21 @@ def test_health_and_assistant_invoke() -> None:
             "task_input": {"report_date": "2026-07-28", "events": []},
         },
     )
-    assert response.status_code == 200
-    assert response.json()["intent"] == "daily_report"
-    assert response.json()["result"]["status"] == "draft"
+    assert response.status_code == 503
+    assert response.json()["detail"] == "assistant runtime is not configured"
 
 
-def test_knowledge_query_requires_permission_and_returns_citations() -> None:
+def test_knowledge_query_returns_citations_from_configured_connector() -> None:
     client = TestClient(app)
-    forbidden = client.post("/knowledge/answer", json={"query": "leave policy"})
-    assert forbidden.status_code == 403
-    allowed = client.post(
-        "/knowledge/answer",
-        json={"query": "leave policy"},
-        headers={"x-permission-scopes": "knowledge:read"},
-    )
-    assert allowed.json()["citations"][0]["document_id"] == "mock-policy-1"
+    response = client.post("/knowledge/answer", json={"query": "leave policy"})
+    assert response.json()["citations"][0]["document_id"] == "mock-policy-1"
 
 
-def test_supervisor_routes_knowledge_with_trusted_context() -> None:
+def test_runtime_rejects_malformed_bearer_token() -> None:
     client = TestClient(app)
-    response = client.post(
-        "/assistant/invoke",
-        json={"thread_id": "knowledge-thread", "message": "knowledge leave policy"},
-        headers={"x-permission-scopes": "knowledge:read"},
-    )
-    assert response.status_code == 200
-    assert response.json()["intent"] == "knowledge_qa"
-    assert response.json()["status"] == "completed"
+    response = client.get("/health", headers={"authorization": "Basic credential"})
+    assert response.status_code == 401
+    assert response.json()["detail"] == "invalid authorization header"
 
 
 def test_runtime_rejects_oversized_request_before_parsing() -> None:

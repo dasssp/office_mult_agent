@@ -10,7 +10,8 @@ from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
-from app.orchestration.tools import DeepAgentDependencies
+from app.orchestration.prompts import MEETING_PROMPT, REPORT_PROMPT
+from app.orchestration.toolkit import OrchestrationDependencies
 from app.schemas import RequestContext
 from app.schemas.workflows import TranscriptSegment, WorkEvent
 from app.services.work_events import MultiSourceWorkEventCollector
@@ -95,7 +96,7 @@ def _finalize(state: DomainState) -> DomainState:
 def build_report_subgraph(
     *,
     model: BaseChatModel,
-    dependencies: DeepAgentDependencies,
+    dependencies: OrchestrationDependencies,
     checkpointer: BaseCheckpointSaver | None = None,
 ):
     async def parse_task(state: DomainState) -> DomainState:
@@ -103,7 +104,9 @@ def build_report_subgraph(
         spec = await structured.ainvoke(
             [
                 SystemMessage(
-                    content=(
+                    content=REPORT_PROMPT
+                    + "\n\n"
+                    + (
                         "将任务解析为报告操作。只提取用户明确提供的字段；"
                         "缺失字段保持为空，不得猜测 report_id。"
                     )
@@ -136,7 +139,7 @@ def build_report_subgraph(
                 gitlab=dependencies.gitlab_connector,
                 tasks=dependencies.task_connector,
                 email=dependencies.email_connector,
-                meeting_minutes=dependencies.meeting_agent,
+                meeting_minutes=dependencies.meeting_service,
             ).collect(
                 date_from=spec.report_date,
                 date_to=date_to,
@@ -145,14 +148,14 @@ def build_report_subgraph(
             events = collection.events
             source_warnings = collection.source_warnings
         if spec.report_type == "weekly":
-            result = await dependencies.report_agent.generate_weekly(
+            result = await dependencies.report_service.generate_weekly(
                 week_start=spec.report_date,
                 events=events,
                 source_warnings=source_warnings,
                 context=runtime.context,
             )
         else:
-            result = await dependencies.report_agent.generate_daily(
+            result = await dependencies.report_service.generate_daily(
                 report_date=spec.report_date,
                 events=events,
                 source_warnings=source_warnings,
@@ -183,7 +186,7 @@ def build_report_subgraph(
                 "warnings": ["用户拒绝执行报告审核。"],
                 "result": {},
             }
-        result = await dependencies.report_agent.review(
+        result = await dependencies.report_service.review(
             report_id=spec.report_id,
             approved=spec.approved,
             comment=spec.comment,
@@ -213,7 +216,7 @@ def build_report_subgraph(
                 "warnings": ["用户拒绝提交报告。"],
                 "result": {},
             }
-        result = await dependencies.report_agent.submit(
+        result = await dependencies.report_service.submit(
             report_id=spec.report_id,
             context=runtime.context,
             connector=dependencies.report_connector,
@@ -250,7 +253,7 @@ def build_report_subgraph(
 def build_meeting_subgraph(
     *,
     model: BaseChatModel,
-    dependencies: DeepAgentDependencies,
+    dependencies: OrchestrationDependencies,
     checkpointer: BaseCheckpointSaver | None = None,
 ):
     async def parse_task(state: DomainState) -> DomainState:
@@ -258,7 +261,9 @@ def build_meeting_subgraph(
         spec = await structured.ainvoke(
             [
                 SystemMessage(
-                    content=(
+                    content=MEETING_PROMPT
+                    + "\n\n"
+                    + (
                         "将任务解析为会议纪要操作。只使用明确提供的 meeting_id、"
                         "title、meeting_date 和转写片段，不猜测负责人或截止日期。"
                     )
@@ -304,7 +309,7 @@ def build_meeting_subgraph(
                 raw_date = meeting.get("meeting_date") or meeting.get("start_time")
                 if raw_date:
                     meeting_date = str(raw_date)[:10]
-        result = await dependencies.meeting_agent.generate(
+        result = await dependencies.meeting_service.generate(
             meeting_id=spec.meeting_id,
             title=title,
             segments=spec.segments,
@@ -330,7 +335,7 @@ def build_meeting_subgraph(
                 "warnings": ["用户拒绝执行会议纪要审核。"],
                 "result": {},
             }
-        result = await dependencies.meeting_agent.review(
+        result = await dependencies.meeting_service.review(
             meeting_id=spec.meeting_id,
             approved=spec.approved,
             comment=spec.comment,
@@ -357,7 +362,7 @@ def build_meeting_subgraph(
                 "warnings": ["用户拒绝发送会议纪要。"],
                 "result": {},
             }
-        result = await dependencies.meeting_agent.send(
+        result = await dependencies.meeting_service.send(
             meeting_id=spec.meeting_id,
             context=runtime.context,
             connector=dependencies.email_connector,

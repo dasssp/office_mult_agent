@@ -11,11 +11,6 @@ from langchain_core.runnables import Runnable
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 
-from app.agents.data_analysis_agent import DataAnalysisAgent
-from app.agents.email_polish_agent import EmailPolishAgent
-from app.agents.knowledge_agent import KnowledgeAgent
-from app.agents.meeting_minutes_agent import MeetingMinutesAgent
-from app.agents.report_agent import ReportAgent
 from app.connectors.mocks.email import MockEmailConnector
 from app.connectors.mocks.enterprise import (
     MockASRService,
@@ -25,8 +20,15 @@ from app.connectors.mocks.enterprise import (
 )
 from app.connectors.mocks.report_system import MockReportSystemConnector
 from app.database import Database
-from app.orchestration.domain_graphs import build_report_subgraph
-from app.orchestration.tools import DeepAgentDependencies
+from app.domain import (
+    DataAnalysisService,
+    EmailPolishService,
+    KnowledgeService,
+    MeetingMinutesService,
+    ReportService,
+)
+from app.orchestration.toolkit import OrchestrationDependencies
+from app.orchestration.worker_graphs import build_report_subgraph
 from app.repositories.persistence import (
     SqlAlchemyAuditRepository,
     SqlAlchemyReportRepository,
@@ -88,20 +90,18 @@ def _dependencies(
     database: Database,
     report_connector: MockReportSystemConnector,
     tmp_path: Path,
-) -> DeepAgentDependencies:
+) -> OrchestrationDependencies:
     runtime_repository = SqlAlchemyRuntimeStateRepository(database.session_factory)
-    report_agent = ReportAgent(
+    report_service = ReportService(
         SqlAlchemyReportRepository(database.session_factory),
-        idempotency=IdempotencyService(
-            SqlAlchemyIdempotencyRepository(database.session_factory)
-        ),
+        idempotency=IdempotencyService(SqlAlchemyIdempotencyRepository(database.session_factory)),
     )
-    return DeepAgentDependencies(
-        report_agent=report_agent,
-        meeting_agent=MeetingMinutesAgent(),
-        email_agent=EmailPolishAgent(),
-        data_agent=DataAnalysisAgent(),
-        knowledge_agent=KnowledgeAgent(),
+    return OrchestrationDependencies(
+        report_service=report_service,
+        meeting_service=MeetingMinutesService(),
+        email_service=EmailPolishService(),
+        data_analysis_service=DataAnalysisService(),
+        knowledge_service=KnowledgeService(),
         report_connector=report_connector,
         email_connector=MockEmailConnector(),
         meeting_connector=MockMeetingIMConnector(),
@@ -109,9 +109,7 @@ def _dependencies(
         gitlab_connector=MockGitLabConnector(),
         task_connector=MockTaskConnector(),
         permissions=PermissionService(),
-        audit=AuditService(
-            repository=SqlAlchemyAuditRepository(database.session_factory)
-        ),
+        audit=AuditService(repository=SqlAlchemyAuditRepository(database.session_factory)),
         files=FileService(storage_dir=tmp_path / "uploads"),
         artifacts=ArtifactService(root=tmp_path / "artifacts"),
         memory=MemoryService(runtime_repository),
@@ -148,8 +146,8 @@ async def test_report_interrupt_resumes_after_process_restart(tmp_path: Path) ->
         evidence_event_ids=["event-1"],
         status="draft",
     )
-    await dependencies.report_agent.repository.save(draft, context)
-    await dependencies.report_agent.review(
+    await dependencies.report_service.repository.save(draft, context)
+    await dependencies.report_service.review(
         report_id=report_id,
         approved=True,
         comment=None,
@@ -193,9 +191,7 @@ async def test_report_interrupt_resumes_after_process_restart(tmp_path: Path) ->
 
     assert resumed["status"] == "completed"
     assert resumed["result"]["status"] == "submitted"
-    persisted = await restarted_dependencies.report_agent.repository.get(
-        report_id, context
-    )
+    persisted = await restarted_dependencies.report_service.repository.get(report_id, context)
     assert persisted is not None
     assert persisted.status == "submitted"
     await database.dispose()

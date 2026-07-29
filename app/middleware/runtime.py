@@ -8,6 +8,12 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
+from app.security import (
+    InvalidSsoTokenError,
+    bind_sso_access_token,
+    extract_bearer_token,
+)
+
 
 class RuntimeSecurityMiddleware(BaseHTTPMiddleware):
     """Adds traceability and rejects oversized requests before parsing their bodies."""
@@ -27,7 +33,16 @@ class RuntimeSecurityMiddleware(BaseHTTPMiddleware):
         request.state.request_id = (
             supplied if self._request_id_pattern.fullmatch(supplied) else str(uuid4())
         )
-        response = await call_next(request)
+        try:
+            sso_token = extract_bearer_token(request.headers.get("authorization"))
+        except InvalidSsoTokenError:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "invalid authorization header"},
+                headers={"X-Request-ID": request.state.request_id},
+            )
+        with bind_sso_access_token(sso_token):
+            response = await call_next(request)
         response.headers["X-Request-ID"] = request.state.request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"

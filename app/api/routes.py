@@ -1,19 +1,20 @@
 from datetime import date, timedelta
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from app.agents.data_analysis_agent import DataAnalysisAgent
-from app.agents.email_polish_agent import EmailPolishAgent
-from app.agents.knowledge_agent import KnowledgeAgent
-from app.agents.meeting_minutes_agent import MeetingMinutesAgent
-from app.agents.report_agent import ReportAgent
-from app.agents.supervisor import build_supervisor_graph
 from app.config import get_settings
+from app.connectors.mcp_knowledge import KnowledgeMcpError
 from app.connectors.mocks.email import MockEmailConnector
 from app.connectors.mocks.report_system import MockReportSystemConnector
 from app.connectors.registry import ConnectorRegistry, ConnectorUnavailableError
+from app.domain import (
+    DataAnalysisService,
+    EmailPolishService,
+    KnowledgeService,
+    MeetingMinutesService,
+    ReportService,
+)
 from app.middleware.context import build_development_context
 from app.schemas import (
     AssistantInvokeRequest,
@@ -38,6 +39,7 @@ from app.schemas.workflows import (
     ReportReviewRequest,
     ReportSubmission,
 )
+from app.security import SsoTokenUnavailableError
 from app.services.approvals import ApprovalService
 from app.services.artifacts import ArtifactService
 from app.services.audit import AuditService
@@ -47,13 +49,12 @@ from app.services.runtime_state import BackgroundTask, BackgroundTaskService
 from app.services.work_events import MultiSourceWorkEventCollector
 
 router = APIRouter()
-_graph = build_supervisor_graph(checkpointer=InMemorySaver())
 _approvals = ApprovalService()
-_report_agent = ReportAgent()
+_report_service = ReportService()
 _report_connector = MockReportSystemConnector()
 _permissions = PermissionService()
 _audit = AuditService()
-_meeting_agent = MeetingMinutesAgent()
+_meeting_service = MeetingMinutesService()
 _email_connector = MockEmailConnector()
 _files = FileService()
 _artifacts = ArtifactService()
@@ -61,28 +62,31 @@ _connectors = ConnectorRegistry.for_environment("development")
 _background_tasks = BackgroundTaskService()
 
 
-def _report_agent_for(request: Request) -> ReportAgent:
-    return getattr(request.app.state, "report_agent", _report_agent)
+def _report_service_for(request: Request) -> ReportService:
+    return getattr(request.app.state, "report_service", _report_service)
 
 
 def _audit_for(request: Request) -> AuditService:
     return getattr(request.app.state, "audit", _audit)
 
 
-def _graph_for(request: Request):
-    return getattr(request.app.state, "graph", _graph)
+def _assistant_runtime_for(request: Request):
+    runtime = getattr(request.app.state, "assistant_runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="assistant runtime is not configured")
+    return runtime
 
 
 def _approvals_for(request: Request) -> ApprovalService:
     return getattr(request.app.state, "approvals", _approvals)
 
 
-def _knowledge_agent_for(request: Request) -> KnowledgeAgent:
-    return getattr(request.app.state, "knowledge_agent", KnowledgeAgent())
+def _knowledge_service_for(request: Request) -> KnowledgeService:
+    return getattr(request.app.state, "knowledge_service", KnowledgeService())
 
 
-def _meeting_agent_for(request: Request) -> MeetingMinutesAgent:
-    return getattr(request.app.state, "meeting_agent", _meeting_agent)
+def _meeting_service_for(request: Request) -> MeetingMinutesService:
+    return getattr(request.app.state, "meeting_service", _meeting_service)
 
 
 def _connectors_for(request: Request) -> ConnectorRegistry:
@@ -134,7 +138,7 @@ async def invoke_assistant(
     context = build_development_context(request, payload.thread_id)
     task_input = {**payload.task_input, "require_approval": payload.require_approval}
     config = {"configurable": {"thread_id": payload.thread_id}}
-    graph = _graph_for(request)
+    graph = _assistant_runtime_for(request)
     result = await graph.ainvoke(
         {"message": payload.message, "task_input": task_input}, config, context=context
     )
@@ -168,12 +172,12 @@ async def invoke_assistant(
 async def answer_knowledge(payload: KnowledgeQueryRequest, request: Request) -> KnowledgeAnswer:
     context = build_development_context(request, thread_id="knowledge:query")
     try:
-        return await _knowledge_agent_for(request).answer(
-            query=payload.query, context=context, permissions=_permissions
+        return await _knowledge_service_for(request).answer(
+            query=payload.query, context=context
         )
-    except PermissionError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
-    except (RuntimeError, ValueError) as error:
+    except SsoTokenUnavailableError as error:
+        raise HTTPException(status_code=401, detail="SSO token required") from error
+    except (KnowledgeMcpError, ValueError, KeyError) as error:
         raise HTTPException(status_code=503, detail="knowledge service unavailable") from error
 
 
@@ -185,7 +189,7 @@ async def _require_pending_approval(thread_id: str, request: Request):
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="pending approval not found")
-    snapshot = await _graph_for(request).aget_state(
+    snapshot = await _assistant_runtime_for(request).aget_state(
         {"configurable": {"thread_id": thread_id}}
     )
     required_scope = str(snapshot.values.get("required_scope", "report:review"))
@@ -201,7 +205,7 @@ async def resume_assistant(
     thread_id: str, payload: AssistantResumeRequest, request: Request
 ) -> AssistantInvokeResponse:
     context = await _require_pending_approval(thread_id, request)
-    result = await _graph_for(request).ainvoke(
+    result = await _assistant_runtime_for(request).ainvoke(
         Command(resume=payload.model_dump()),
         {"configurable": {"thread_id": thread_id}},
         context=context,
@@ -235,15 +239,15 @@ async def resume_assistant(
 @router.get("/assistant/{thread_id}/state", response_model=AssistantStateResponse)
 async def assistant_state(thread_id: str, request: Request) -> AssistantStateResponse:
     await _require_pending_approval(thread_id, request)
-    snapshot = await _graph_for(request).aget_state({"configurable": {"thread_id": thread_id}})
+    snapshot = await _assistant_runtime_for(request).aget_state(
+        {"configurable": {"thread_id": thread_id}}
+    )
     return AssistantStateResponse(
         thread_id=thread_id,
         status=str(snapshot.values.get("status", "unknown")),
         awaiting_approval=bool(snapshot.next),
         next_nodes=list(snapshot.next),
-        pending_actions=[
-            str(item) for item in snapshot.values.get("pending_actions", [])
-        ],
+        pending_actions=[str(item) for item in snapshot.values.get("pending_actions", [])],
         required_scope=(
             str(snapshot.values["required_scope"])
             if snapshot.values.get("required_scope")
@@ -255,24 +259,22 @@ async def assistant_state(thread_id: str, request: Request) -> AssistantStateRes
 @router.post("/reports/generate", response_model=ReportDraft)
 async def generate_report(payload: ReportGenerateRequest, request: Request) -> ReportDraft:
     context = build_development_context(request, thread_id=f"report:new:{payload.report_date}")
-    agent = _report_agent_for(request)
+    service = _report_service_for(request)
     source_warnings: list[str] = []
     if payload.events:
         events = payload.events
     elif payload.use_mock_sources:
-        events = await agent.collect_mock_events()
+        events = await service.collect_mock_events()
     else:
         date_to = payload.report_date
         if payload.report_type == "weekly":
-            date_to = (
-                date.fromisoformat(payload.report_date) + timedelta(days=6)
-            ).isoformat()
+            date_to = (date.fromisoformat(payload.report_date) + timedelta(days=6)).isoformat()
         connectors = _connectors_for(request)
         collection = await MultiSourceWorkEventCollector(
             gitlab=connectors.gitlab,
             tasks=connectors.task,
             email=connectors.email,
-            meeting_minutes=_meeting_agent_for(request),
+            meeting_minutes=_meeting_service_for(request),
         ).collect(
             date_from=payload.report_date,
             date_to=date_to,
@@ -281,13 +283,13 @@ async def generate_report(payload: ReportGenerateRequest, request: Request) -> R
         events = collection.events
         source_warnings = collection.source_warnings
     if payload.report_type == "weekly":
-        return await agent.generate_weekly(
+        return await service.generate_weekly(
             week_start=payload.report_date,
             events=events,
             source_warnings=source_warnings,
             context=context,
         )
-    return await agent.generate_daily(
+    return await service.generate_daily(
         report_date=payload.report_date,
         events=events,
         source_warnings=source_warnings,
@@ -301,7 +303,7 @@ async def review_report(
 ) -> ReportDraft:
     context = build_development_context(request, thread_id=f"report:{report_id}")
     try:
-        return await _report_agent_for(request).review(
+        return await _report_service_for(request).review(
             report_id=report_id,
             approved=payload.approved,
             comment=payload.comment,
@@ -319,7 +321,7 @@ async def review_report(
 async def submit_report(report_id: str, request: Request) -> ReportSubmission:
     context = build_development_context(request, thread_id=f"report:{report_id}")
     try:
-        return await _report_agent_for(request).submit(
+        return await _report_service_for(request).submit(
             report_id=report_id,
             context=context,
             connector=_connectors_for(request).report_system,
@@ -341,7 +343,7 @@ async def generate_minutes(
     meeting_id: str, payload: MeetingMinutesRequest, request: Request
 ) -> MeetingMinutesDraft:
     context = build_development_context(request, thread_id=f"meeting:{meeting_id}")
-    return await _meeting_agent_for(request).generate(
+    return await _meeting_service_for(request).generate(
         meeting_id=meeting_id,
         title=payload.title,
         segments=payload.segments,
@@ -355,12 +357,8 @@ async def generate_minutes(
     response_model=BackgroundTaskResponse,
     status_code=202,
 )
-async def start_meeting_transcription(
-    meeting_id: str, request: Request
-) -> BackgroundTaskResponse:
-    context = build_development_context(
-        request, thread_id=f"meeting:{meeting_id}:transcription"
-    )
+async def start_meeting_transcription(meeting_id: str, request: Request) -> BackgroundTaskResponse:
+    context = build_development_context(request, thread_id=f"meeting:{meeting_id}:transcription")
     try:
         _permissions.require(context, "meeting:transcribe")
         task = await _background_tasks_for(request).create(
@@ -374,9 +372,7 @@ async def start_meeting_transcription(
 
 
 @router.get("/tasks/{task_id}", response_model=BackgroundTaskResponse)
-async def get_background_task(
-    task_id: str, request: Request
-) -> BackgroundTaskResponse:
+async def get_background_task(task_id: str, request: Request) -> BackgroundTaskResponse:
     context = build_development_context(request, thread_id=f"task:{task_id}")
     try:
         task = await _background_tasks_for(request).get(task_id, context)
@@ -386,9 +382,7 @@ async def get_background_task(
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=BackgroundTaskResponse)
-async def cancel_background_task(
-    task_id: str, request: Request
-) -> BackgroundTaskResponse:
+async def cancel_background_task(task_id: str, request: Request) -> BackgroundTaskResponse:
     context = build_development_context(request, thread_id=f"task:{task_id}")
     try:
         _permissions.require(context, "task:cancel")
@@ -406,7 +400,7 @@ async def review_minutes(
 ) -> MeetingMinutesDraft:
     context = build_development_context(request, thread_id=f"meeting:{meeting_id}")
     try:
-        return await _meeting_agent_for(request).review(
+        return await _meeting_service_for(request).review(
             meeting_id=meeting_id,
             approved=payload.approved,
             comment=payload.comment,
@@ -424,7 +418,7 @@ async def review_minutes(
 async def send_minutes(meeting_id: str, request: Request) -> MeetingEmailStatus:
     context = build_development_context(request, thread_id=f"meeting:{meeting_id}")
     try:
-        return await _meeting_agent_for(request).send(
+        return await _meeting_service_for(request).send(
             meeting_id=meeting_id,
             context=context,
             connector=_connectors_for(request).email,
@@ -443,21 +437,21 @@ async def send_minutes(meeting_id: str, request: Request) -> MeetingEmailStatus:
 
 @router.post("/emails/polish", response_model=EmailPolishDraft)
 async def polish_email(payload: EmailPolishRequest) -> EmailPolishDraft:
-    return EmailPolishAgent().polish(
+    return EmailPolishService().polish(
         subject=payload.subject, body=payload.body, attachments=payload.attachments
     )
 
 
 @router.post("/analysis/run", response_model=DataAnalysisResult)
 async def analyze_data(payload: DataAnalysisRequest) -> DataAnalysisResult:
-    return DataAnalysisAgent().analyze(rows=payload.rows)
+    return DataAnalysisService().analyze(rows=payload.rows)
 
 
 @router.post("/analysis/files/{file_id}", response_model=DataAnalysisResult)
 async def analyze_uploaded_file(file_id: str, request: Request) -> DataAnalysisResult:
     context = build_development_context(request, thread_id=f"file:{file_id}")
     try:
-        return DataAnalysisAgent().analyze(
+        return DataAnalysisService().analyze(
             rows=await _files_for(request).get_rows(file_id, context)
         )
     except KeyError as error:
@@ -468,7 +462,7 @@ async def analyze_uploaded_file(file_id: str, request: Request) -> DataAnalysisR
 async def export_uploaded_analysis(file_id: str, request: Request) -> dict[str, str]:
     context = build_development_context(request, thread_id=f"file:{file_id}")
     try:
-        result = DataAnalysisAgent().analyze(
+        result = DataAnalysisService().analyze(
             rows=await _files_for(request).get_rows(file_id, context)
         )
         result.source_file_id = file_id

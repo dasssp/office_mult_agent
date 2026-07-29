@@ -1,9 +1,8 @@
 import pytest
 
-from app.agents.meeting_minutes_agent import MeetingMinutesAgent
-from app.agents.report_agent import ReportAgent
 from app.connectors.mocks.email import MockEmailConnector
 from app.connectors.mocks.enterprise import MockGitLabConnector, MockTaskConnector
+from app.domain import MeetingMinutesService, ReportService
 from app.schemas import RequestContext
 from app.schemas.workflows import SourceType, TranscriptSegment
 from app.services.audit import AuditService
@@ -24,7 +23,7 @@ def _context() -> RequestContext:
 @pytest.mark.asyncio
 async def test_collects_gitlab_tasks_email_and_approved_minutes() -> None:
     context = _context()
-    meetings = MeetingMinutesAgent()
+    meetings = MeetingMinutesService()
     await meetings.generate(
         meeting_id="meeting-1",
         title="项目交付会",
@@ -70,7 +69,7 @@ async def test_collects_gitlab_tasks_email_and_approved_minutes() -> None:
         SourceType.EMAIL,
         SourceType.MEETING,
     }
-    draft = await ReportAgent().generate_daily(
+    draft = await ReportService().generate_daily(
         report_date="2026-07-28",
         events=collection.events,
         source_warnings=collection.source_warnings,
@@ -117,7 +116,7 @@ async def test_source_failure_keeps_partial_report_events() -> None:
         gitlab=MockGitLabConnector(),
         tasks=MockTaskConnector(),
         email=_UnavailableEmailConnector(),
-        meeting_minutes=MeetingMinutesAgent(),
+        meeting_minutes=MeetingMinutesService(),
     ).collect(
         date_from="2026-07-28",
         date_to="2026-07-28",
@@ -136,7 +135,7 @@ async def test_sensitive_email_is_excluded_from_report_events() -> None:
         gitlab=MockGitLabConnector(),
         tasks=MockTaskConnector(),
         email=_SensitiveEmailConnector(),
-        meeting_minutes=MeetingMinutesAgent(),
+        meeting_minutes=MeetingMinutesService(),
     ).collect(
         date_from="2026-07-28",
         date_to="2026-07-28",

@@ -1,1 +1,0 @@
-"""MCP knowledge tool implementations."""

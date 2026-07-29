@@ -2,7 +2,8 @@
 
 基于 FastAPI、LangGraph、Deep Agents 和 PostgreSQL 构建的企业级多智能体办公助手。
 系统支持日报/周报、会议纪要、邮件润色、文件分析与图表导出、企业知识问答，并通过
-独立 Java RAG MCP 适配层接入知识库。
+使用 LangChain MCP Client 通过 Streamable HTTP 直接连接 Java RAG 暴露的 MCP Server，并按请求安全透传
+SSO Token；知识权限由 Java RAG 统一判定。
 
 ## 架构亮点
 
@@ -30,20 +31,30 @@ python -m pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
-默认运行确定性的旧版 StateGraph，适合无模型密钥的本地回归：
+配置 Supervisor 使用的模型：
 
 ```env
-ASSISTANT_RUNTIME=legacy
-```
-
-启用 Deep Agent：
-
-```env
-ASSISTANT_RUNTIME=deep_agent
 AGENT_MODEL=提供商模型名称
 ```
 
-模型密钥必须由部署环境或密钥管理系统注入，不得写入仓库。
+模型密钥必须由部署环境或密钥管理系统注入，不得写入仓库。开发环境没有配置
+`AGENT_MODEL` 时，领域 API 仍可运行，Assistant API 会明确返回 `503`；生产环境缺少模型
+配置时拒绝启动。
+
+## 代码结构
+
+```text
+app/
+├─ orchestration/       # Supervisor、Worker 配置、领域子图与 Agent 工具
+├─ domain/              # 确定性领域服务，不包含 LLM/ReAct 循环
+├─ connectors/          # GitLab、邮件、MCP 等外部系统边界
+├─ repositories/        # PostgreSQL 持久化
+├─ services/            # 审核、审计、缓存、文件和异步任务等应用服务
+└─ api/                 # FastAPI 路由与协议适配
+```
+
+实际 Agent 只存在于 `app/orchestration`；数据统计、报告、会议等确定性能力统一使用
+`*Service` 命名，避免把普通业务类误认为自主 Agent。
 
 ## 容器化启动
 
@@ -111,12 +122,16 @@ alembic upgrade head
 ## Java RAG MCP
 
 ```env
-KNOWLEDGE_MCP_URL=http://knowledge-mcp-adapter:8001/mcp
-KNOWLEDGE_MCP_SERVICE_TOKEN=由密钥系统注入
+KNOWLEDGE_MCP_URL=http://localhost:8000/mcp
+KNOWLEDGE_MCP_ANSWER_TOOL=knowledge_answer_tool
+KNOWLEDGE_MCP_TIMEOUT_SECONDS=15
 ```
 
-主应用只调用 MCP 工具，不在 Python 项目中重复实现 RAG。生产模式缺少 MCP 地址或服务
-令牌时会拒绝启动。
+主应用只调用 MCP 工具，不在 Python 项目中重复实现 RAG。生产模式缺少 MCP 地址时会
+拒绝启动；每次真实知识查询必须携带 `Authorization: Bearer <SSO Token>`。Token 只进入
+Java RAG MCP 的 HTTP 请求头，不进入 Prompt、工具参数、Checkpoint、Redis 或日志。
+如果主应用运行在 Docker 中、Java RAG 运行在宿主机，请将地址配置为
+`http://host.docker.internal:8000/mcp`。
 
 ## Redis 缓存
 
@@ -192,4 +207,4 @@ GitLab CI 包含 Redis 7 和 PostgreSQL 16 服务，会验证缓存读写、数�
 上线前仍需接入真实报工、邮件、IM、ASR、任务和目录 Connector，并配置认证网关、
 对象存储、病毒扫描、DLP、TLS、备份恢复、指标追踪和告警。
 
-详细改造说明见 [Deep Agent 改造说明](docs/DEEP_AGENT_MIGRATION.md)。
+详细设计见 [系统架构说明](docs/architecture.md)。

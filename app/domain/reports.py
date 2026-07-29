@@ -10,7 +10,7 @@ from app.services.permissions import PermissionService
 from app.services.sensitive_data import SensitiveDataService
 
 
-class ReportAgent:
+class ReportService:
     def __init__(
         self,
         repository: InMemoryReportRepository | SqlAlchemyReportRepository | None = None,

@@ -8,7 +8,8 @@
 Multi-Agent 办公助手。主 Agent 负责理解目标、拆解任务、委派领域子 Agent、有限
 重规划和结果汇总；领域子 Agent 只能调用所属领域的受控工具。
 
-系统不在 Python 应用中重复实现 Java RAG。知识能力必须通过独立 MCP 适配层调用。
+系统不在 Python 应用中重复实现 Java RAG。知识能力通过 LangChain MCP Client 和
+Streamable HTTP 直接调用 Java RAG 暴露的 MCP Server。
 
 ## 2. Agent 架构需求
 
@@ -83,8 +84,8 @@ Multi-Agent 办公助手。主 Agent 负责理解目标、拆解任务、委派�
 ## 6. API 兼容需求
 
 - 保留现有 `/assistant/invoke`、`/assistant/{thread_id}/resume` 和领域 API；
-- 使用 `ASSISTANT_RUNTIME=legacy|deep_agent` 灰度切换；
-- Deep Agent 模式必须显式配置 `AGENT_MODEL`；
+- 生产环境必须显式配置 `AGENT_MODEL`，不得静默降级到另一套编排；
+- 开发环境未配置模型时，Assistant API 必须明确返回不可用，领域 API 保持可测试；
 - API 响应继续提供状态、结果、警告和审核状态，不返回隐藏推理过程；
 - 审核状态接口应返回待执行工具及对应权限范围。
 

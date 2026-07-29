@@ -21,7 +21,7 @@ from app.services.permissions import PermissionService
 from app.services.sensitive_data import SensitiveDataService
 
 
-class MeetingMinutesAgent:
+class MeetingMinutesService:
     def __init__(
         self,
         repository: MeetingMinutesRepository | None = None,

@@ -40,7 +40,6 @@ services:
         condition: service_healthy
     environment:
       APP_ENV: ${APP_ENV:-development}
-      ASSISTANT_RUNTIME: ${ASSISTANT_RUNTIME:-legacy}
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_RECURSION_LIMIT: ${AGENT_RECURSION_LIMIT:-48}
       AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-180}
@@ -61,9 +60,10 @@ services:
       MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-2097152}
       LANGGRAPH_STRICT_MSGPACK: "true"
       KNOWLEDGE_MCP_URL: ${KNOWLEDGE_MCP_URL:-}
-      KNOWLEDGE_MCP_SERVICE_TOKEN: ${KNOWLEDGE_MCP_SERVICE_TOKEN:-}
+      KNOWLEDGE_MCP_ANSWER_TOOL: ${KNOWLEDGE_MCP_ANSWER_TOOL:-knowledge_answer_tool}
+      KNOWLEDGE_MCP_TIMEOUT_SECONDS: ${KNOWLEDGE_MCP_TIMEOUT_SECONDS:-15}
     ports:
-      - "${APP_PORT:-8000}:8000"
+      - "${APP_PORT:-8080}:8000"
     volumes:
       - uploads_data:/srv/app/uploads
 

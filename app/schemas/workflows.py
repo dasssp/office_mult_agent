@@ -224,13 +224,13 @@ class DataAnalysisResult(BaseModel):
 
 
 class KnowledgeCitation(BaseModel):
-    document_id: str
-    chunk_id: str
-    title: str
+    document_id: str = Field(min_length=1, max_length=512)
+    chunk_id: str = Field(min_length=1, max_length=512)
+    title: str = Field(min_length=1, max_length=1000)
 
 
 class KnowledgeAnswer(BaseModel):
-    answer: str
+    answer: str = Field(min_length=1)
     citations: list[KnowledgeCitation]
     warnings: list[str] = Field(default_factory=list)
     status: Literal["completed", "insufficient_evidence"]

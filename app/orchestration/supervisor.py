@@ -13,12 +13,12 @@ from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
 from langgraph.types import Command
 
-from app.agents.supervisor.graph import _classify
+from app.orchestration.intent import classify_intent
 from app.orchestration.middleware import PlanningBudgetMiddleware
 from app.orchestration.prompts import MAIN_AGENT_PROMPT
 from app.orchestration.schemas import MainAgentResponse
-from app.orchestration.subagents import build_subagent_profiles
-from app.orchestration.tools import DeepAgentDependencies, build_main_tools
+from app.orchestration.toolkit import OrchestrationDependencies, build_main_tools
+from app.orchestration.workers import build_worker_profiles
 from app.schemas import RequestContext
 from app.services.runtime_state import MemoryService
 
@@ -28,10 +28,10 @@ def _memory_namespace(runtime: Runtime[RequestContext]) -> tuple[str, ...]:
     return ("office-multi-agent", context.tenant_id, context.operator_id)
 
 
-def build_main_deep_agent(
+def build_supervisor(
     *,
     model: BaseChatModel,
-    dependencies: DeepAgentDependencies,
+    dependencies: OrchestrationDependencies,
     checkpointer: BaseCheckpointSaver,
     store: BaseStore | None = None,
     max_delegations: int = 8,
@@ -48,7 +48,7 @@ def build_main_deep_agent(
                 max_plan_updates=max_plan_updates,
             )
         ],
-        subagents=build_subagent_profiles(model, dependencies),
+        subagents=build_worker_profiles(model, dependencies),
         response_format=MainAgentResponse,
         context_schema=RequestContext,
         checkpointer=checkpointer,
@@ -76,8 +76,8 @@ class RuntimeStateView:
     next: tuple[str, ...]
 
 
-class DeepAgentRuntime:
-    """Adapt a Deep Agents graph to the existing assistant API contract."""
+class SupervisorRuntime:
+    """将 Deep Agents Supervisor 图适配为稳定的 Assistant API 契约。"""
 
     def __init__(
         self,
@@ -142,7 +142,7 @@ class DeepAgentRuntime:
     def _adapt(self, raw: dict[str, Any], fallback_message: str = "") -> dict[str, Any]:
         messages = self._messages(raw)
         original = fallback_message or self._original_message(messages)
-        intent = _classify(original)
+        intent = classify_intent(original)
         structured = raw.get("structured_response")
         status: str
         if isinstance(structured, MainAgentResponse):
@@ -235,7 +235,7 @@ class DeepAgentRuntime:
                         context=context,
                     )
         except TimeoutError:
-            intent = _classify(fallback_message)
+            intent = classify_intent(fallback_message)
             return {
                 "intent": intent,
                 "status": "failed",
@@ -279,7 +279,7 @@ class DeepAgentRuntime:
         actions = self._pending_action_names(snapshot)
         return RuntimeStateView(
             values={
-                "intent": _classify(original),
+                "intent": classify_intent(original),
                 "status": "awaiting_approval" if snapshot.next else "completed",
                 "pending_actions": actions,
                 "required_scope": self._required_scope(actions),
@@ -288,4 +288,4 @@ class DeepAgentRuntime:
         )
 
 
-__all__ = ["DeepAgentDependencies", "DeepAgentRuntime", "build_main_deep_agent"]
+__all__ = ["SupervisorRuntime", "build_supervisor"]

@@ -3,10 +3,6 @@ from typing import cast
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from langchain_core.language_models import BaseChatModel
 
-from app.orchestration.domain_graphs import (
-    build_meeting_subgraph,
-    build_report_subgraph,
-)
 from app.orchestration.prompts import (
     DATA_PROMPT,
     EMAIL_PROMPT,
@@ -14,17 +10,21 @@ from app.orchestration.prompts import (
     KNOWLEDGE_PROMPT,
 )
 from app.orchestration.schemas import SubAgentOutcome
-from app.orchestration.tools import (
-    DeepAgentDependencies,
+from app.orchestration.toolkit import (
+    OrchestrationDependencies,
     build_data_tools,
     build_email_tools,
     build_knowledge_tools,
 )
+from app.orchestration.worker_graphs import (
+    build_meeting_subgraph,
+    build_report_subgraph,
+)
 
 
-def build_subagent_profiles(
+def build_worker_profiles(
     model: BaseChatModel,
-    deps: DeepAgentDependencies,
+    deps: OrchestrationDependencies,
 ) -> list[SubAgent | CompiledSubAgent]:
     return cast(
         list[SubAgent | CompiledSubAgent],
